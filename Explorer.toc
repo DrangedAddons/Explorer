@@ -1,0 +1,24 @@
+## Interface: 16001
+## Title: Explorer
+## Notes: World map pins on every area you still have to visit for the Legacy "Explore" challenges.
+## Author: Dranged
+## Version: 0.3.0
+## OptionalDeps: EllesmereUI, WaypointUI, OpenMap
+## X-DrangedAddons-Games: _forever_
+## X-DrangedHub-Frame: ExplorerFrame
+## X-DrangedHub-Open: /explorer
+## X-DrangedHub-Crop: 40
+## IconTexture: Interface\AddOns\Explorer\icon
+## AddonCompartmentFunc: Explorer_OnCompartmentClick
+## SavedVariables: ExplorerDB
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+Theme.lua
+Widgets.lua
+Window.lua
+Data.lua
+Core.lua
+UI.lua

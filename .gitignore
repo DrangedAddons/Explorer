@@ -1,0 +1,7 @@
+# OS / editor clutter
+Thumbs.db
+.DS_Store
+*.bak
+
+# Downloaded game tables (tools/build_data.py --refresh)
+tools/.cache/
