@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+- Popup when an area is explored: a banner near the top of the screen with the area's name, its zone and the zone's new count ("Alterac Mountains 8/9"), plus a thin progress bar. It says "fully explored" on a zone's last area. Several areas at once show one after the other. The banner fades out after a few seconds and lets clicks through.
+- "Sample" in the settings, or `/ep test`, shows a sample popup. Drag it to where popups should appear, scroll on it to make it bigger or smaller, right-click to put both back.
+- Settings: "Show a popup when an area is explored". The chat line has its own switch as before.
+
 ## 0.4.0
 
 - Zones you're not in: open a zone's map and its unexplored areas now show as small faint markers. They are see-through and sit under the full pins, so they don't cover the map. Hover one for the area's name, click it to set a waypoint.

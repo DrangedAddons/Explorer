@@ -205,6 +205,7 @@ function M.SetChecked(o, v) o._checked = v end
 function M.HasFocus() return false end
 function M.IsEnabled() return true end
 function M.Click(o, button) Fire(o, "OnClick", button or "LeftButton") end
+function M.EnableMouse(o, on) o._mouse = on and true or false end
 function M.StartMoving() end
 function M.StopMovingOrSizing() end
 

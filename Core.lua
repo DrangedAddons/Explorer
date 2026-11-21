@@ -19,6 +19,7 @@ local DEFAULTS = {
     others = "faint",       -- a zone you're not in, on its own map: "faint" small markers, full "pins" or "none"
     hoverLine = true,       -- "Explored 7/9" under a zone's name on the map
     announce = true,        -- chat line when an area gets its tick
+    popup = true,           -- banner on screen when an area gets its tick (Toast.lua)
     size = 24,              -- pin size on a zone map
     theme = "auto",
 }
@@ -85,8 +86,13 @@ local function Scan()
         if ok then
             out[#out + 1] = zone
             for _, a in ipairs(zone.areas) do
-                if a.done and seen[a.overlay] == false and not first and db.announce then
-                    NS.Print(("%s explored. %s: %d/%d."):format(a.name, zone.name, zone.done, zone.total))
+                if a.done and seen[a.overlay] == false and not first then
+                    if db.announce then
+                        NS.Print(("%s explored. %s: %d/%d."):format(a.name, zone.name, zone.done, zone.total))
+                    end
+                    if db.popup and NS.Toast then
+                        pcall(NS.Toast, a.name, zone.name, zone.done, zone.total)
+                    end
                 end
                 seen[a.overlay] = a.done
             end
@@ -622,7 +628,7 @@ frame:SetScript("OnEvent", function(self, event, arg1)
             pcall(self.RegisterEvent, self, e)
         end
         if NS.InitUI then NS.InitUI() end
-        RescanSoon(5)   -- the baseline the "explored" chat lines compare against
+        RescanSoon(5)   -- the baseline the "explored" chat lines and popups compare against
     elseif event == "CRITERIA_UPDATE" or event == "ACHIEVEMENT_EARNED" then
         dirty = true
     else
@@ -666,10 +672,13 @@ SlashCmdList.EXPLORER = function(msg)
     elseif cmd == "list" then
         dirty = true
         PrintZones()
+    elseif cmd == "test" then
+        if NS.ToastSample then NS.ToastSample() end
     else
         NS.Print("/ep - open the window")
         NS.Print("/ep next - waypoint on the nearest unexplored area of this zone")
         NS.Print("/ep list - what's left, zone by zone")
+        NS.Print("/ep test - show a sample of the \"area explored\" popup (drag it to move it)")
     end
 end
 

@@ -65,7 +65,7 @@ C_Map = {
 UiMapPoint = { CreateFromCoordinates = function(map, x, y) return { map = map, x = x, y = y } end }
 C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
 
-ns = LoadAddon(ADDON_DIR, "Explorer", { "Theme.lua", "Widgets.lua", "Window.lua", "Data.lua", "Core.lua", "UI.lua" })
+ns = LoadAddon(ADDON_DIR, "Explorer", { "Theme.lua", "Widgets.lua", "Window.lua", "Data.lua", "Core.lua", "Toast.lua", "UI.lua" })
 FireEvent("ADDON_LOADED", "Explorer")
 FireEvent("PLAYER_LOGIN")
 FlushTimers()
@@ -127,6 +127,27 @@ FlushTimers()
 n = Pins()
 Check(n == 13, "two areas ticked: 13 pins left, got " .. n)
 Check(Printed("Crushridge Hold explored%. Zone 1416: 2/15%."), "chat line for a newly ticked area")
+
+-- And a popup each, one after the other.
+do
+    local toast = ExplorerToast
+    local step = toast and toast:GetScript("OnUpdate")
+    Check(toast and toast:IsShown() and toast._alpha == 0, "popup comes up for a newly ticked area, faded out to start")
+    Check(toast.sub:GetText() == "Zone 1416  2/15", "popup names the zone and its count")
+    Check(not toast._mouse, "popup lets clicks through")
+    local first = toast.name:GetText()
+    step(toast, 0.3)
+    Check(toast._alpha == 1, "popup fades in")
+    step(toast, 3)
+    Check(toast.name:GetText() ~= first and toast:IsShown(), "second area's popup follows the first")
+    local names = { [first] = true, [toast.name:GetText()] = true }
+    Check(names["Crushridge Hold"] and Count(names) == 2, "both areas got a popup")
+    step(toast, 0.3)
+    step(toast, 4.5)
+    Check(toast._alpha < 1 and toast._alpha > 0, "popup fades out after its hold")
+    step(toast, 1)
+    Check(not toast:IsShown(), "popup goes away")
+end
 
 -- Zoom: pins keep their screen size.
 canvas:SetScale(2)
@@ -324,6 +345,56 @@ for _, mode in ipairs({ "name", "bare" }) do
     n = Pins()
     done, total = ns.Totals()
     Check(n == 13 and done == 5 and total == 549, "criteria matched by " .. mode .. ": 13 pins, 5 of 549")
+end
+
+-- The sample popup: takes the mouse, drags, resizes, resets.
+do
+    local toast = ExplorerToast
+    local step = toast:GetScript("OnUpdate")
+    for _ = 1, 50 do step(toast, 100) end   -- run out the popups from the ticks above
+    Check(not toast:IsShown(), "queued popups run out")
+    SlashCmdList.EXPLORER("test")
+    Check(toast:IsShown() and toast._mouse == true and toast.sub:GetText():find("Drag"), "/ep test shows a sample that takes the mouse")
+    local _, _, _, _, y0 = toast:GetPoint(1)
+    Check(y0 == -210, "popup sits 210 under the top of the screen by default")
+    toast:GetScript("OnMouseWheel")(toast, 1)
+    toast:GetScript("OnMouseWheel")(toast, 1)
+    local _, _, _, _, y1 = toast:GetPoint(1)
+    Check(math.abs(ns.db.popupScale - 1.2) < 0.001 and math.abs(toast:GetScale() - 1.2) < 0.001 and math.abs(y1 * 1.2 + 210) < 0.01,
+        "scrolling on the sample resizes it in place")
+    toast:GetScript("OnDragStart")(toast)
+    step(toast, 60)
+    Check(toast:IsShown(), "sample stays up while it's dragged")
+    toast:ClearAllPoints()
+    toast:SetPoint("CENTER", UIParent, "CENTER", 100, 50)   -- where the drag left it
+    toast:GetScript("OnDragStop")(toast)
+    local pos = ns.db.popupPos
+    Check(pos and pos[1] == "CENTER" and math.abs(pos[3] - 120) < 0.01 and math.abs(pos[4] - 60) < 0.01, "dragging the sample saves its place")
+    toast:GetScript("OnMouseUp")(toast, "RightButton")
+    Check(ns.db.popupPos == nil and ns.db.popupScale == nil and toast:GetScale() == 1, "right-click puts the sample back")
+
+    -- A real popup takes over from the sample; with the setting off there is none.
+    local z = ZoneOf(760)
+    local fresh = {}
+    for i = 3, #z do if not doneSet[z[i]] then fresh[#fresh + 1] = z[i] end end
+    doneSet[fresh[1]] = true
+    FireEvent("ZONE_CHANGED")
+    FlushTimers()
+    Check(toast:IsShown() and not toast._mouse and toast.name:GetText() == ns.Areas[fresh[1]][4], "a real popup replaces the sample")
+    step(toast, 0.3); step(toast, 4.5); step(toast, 1)
+    Check(not toast:IsShown(), "and goes away")
+    ns.db.popup = false
+    doneSet[fresh[2]] = true
+    FireEvent("ZONE_CHANGED")
+    FlushTimers()
+    Check(not toast:IsShown(), "popup setting off: no popup")
+    ns.db.popup = true
+
+    -- The last area of a zone.
+    for i = 3, #fresh do doneSet[fresh[i]] = true end
+    FireEvent("ZONE_CHANGED")
+    FlushTimers()
+    Check(toast:IsShown() and toast.sub:GetText() == "Zone 1416 fully explored", "last area: popup says the zone is fully explored")
 end
 
 FAILS = fails

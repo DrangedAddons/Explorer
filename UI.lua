@@ -33,7 +33,7 @@ end
 
 local function BuildWindow()
     local db = NS.db
-    window = UI.Window({ name = "ExplorerFrame", title = "Explorer", width = 460, height = 660 })
+    window = UI.Window({ name = "ExplorerFrame", title = "Explorer", width = 460, height = 686 })
     local body = window.body
     local y = 0
     local function Row(widget, h)
@@ -95,6 +95,19 @@ local function BuildWindow()
     y = y - 30
     Row(UI.Check(body, "Show \"Explored 7/9\" under zone names on the map", function() return db.hoverLine end,
         function(v) db.hoverLine = v end))
+    local sample = UI.Button(body, "Sample", 80, 22, function() NS.ToastSample() end)
+    sample:SetPoint("TOPRIGHT", body, "TOPRIGHT", -4, y - 1)
+    sample:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Shows a sample popup.")
+        GameTooltip:AddLine("Drag the sample to where popups should appear.", 1, 1, 1)
+        GameTooltip:AddLine("Scroll on it to make it bigger or smaller.", 1, 1, 1)
+        GameTooltip:AddLine("Right-click it to put both back.", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    sample:HookScript("OnLeave", function() GameTooltip:Hide() end)
+    Row(UI.Check(body, "Show a popup when an area is explored", function() return db.popup end,
+        function(v) db.popup = v end))
     Row(UI.Check(body, "Say in chat when an area is explored", function() return db.announce end,
         function(v) db.announce = v end))
     Row(UI.Check(body, "Show minimap button", function() return not db.minimap.hide end,

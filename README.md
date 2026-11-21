@@ -7,7 +7,8 @@ World of Warcraft: Forever addon. Puts a pin on the world map for every area you
 - **The zone you're in:** a spyglass pin on each area the challenge hasn't ticked yet. Hover it for the area name and the zone's progress. Click it to set a waypoint there. On the continent map they show as small gold dots.
 - **Other zones:** open a zone's map and its unexplored areas show as small faint markers that stay out of the way of the map's other icons. Hover one for its name, click it for a waypoint. "Zones I'm not in" in the settings switches them to full pins or off.
 - **Continent maps:** hover a zone and a line under its name says "Explored 7/9". Fully explored zones have no line. Only the zone you're in has markers at this level.
-- **Chat line** when an area gets its tick, with the zone's new count.
+- **Popup** when an area gets its tick: a banner near the top of the screen with the area, its zone and the zone's new count. `/ep test` (or "Sample" in the settings) shows a sample you can drag to move, scroll on to resize, and right-click to reset.
+- **Chat line** for the same, if you want it in the log too.
 - `/explorer` (or `/ep`) opens the window: progress per zone (click a zone to open its map) and the settings.
 - `/ep next` sets a waypoint on the nearest unexplored area of the zone you're in.
 - `/ep list` prints what's left, zone by zone.
