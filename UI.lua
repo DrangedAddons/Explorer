@@ -43,8 +43,8 @@ local function BuildWindow()
     end
 
     local summary = Row(UI.Text(body, "", "GameFontNormal"), 22)
-    local hint = Row(UI.Text(body, "Unexplored areas of the zone you're in have a spyglass pin on the world map; click one "
-        .. "to set a waypoint. Click a zone here to open its map.", "GameFontHighlightSmall"), 30)
+    local hint = Row(UI.Text(body, "Unexplored areas have a spyglass pin on the map of the zone you're in and a small marker "
+        .. "on other zones' maps. Click one to set a waypoint. Click a zone here to open its map.", "GameFontHighlightSmall"), 30)
     hint:SetWidth(420)
 
     local list = UI.List(body, 424, 20, 12, function(row, zone)
@@ -82,14 +82,15 @@ local function BuildWindow()
 
     Row(UI.Check(body, "Show pins on the world map", function() return db.pins end,
         function(v) db.pins = v; NS.RefreshPins() end))
-    local scopeLabel = UI.Text(body, "Pins for", "GameFontHighlight")
+    local scopeLabel = UI.Text(body, "Zones I'm not in", "GameFontHighlight")
     scopeLabel:SetPoint("TOPLEFT", body, "TOPLEFT", 28, y - 4)
-    local scope = UI.Dropdown(body, 240, function()
+    local scope = UI.Dropdown(body, 200, function()
         return {
-            { value = "here", label = "The zone I'm in" },
-            { value = "view", label = "Any zone I zoom in on" },
+            { value = "faint", label = "Small markers" },
+            { value = "pins", label = "Full pins" },
+            { value = "none", label = "Nothing" },
         }
-    end, function() return db.scope end, function(v) db.scope = v; NS.RefreshPins() end)
+    end, function() return db.others end, function(v) db.others = v; NS.RefreshPins() end)
     scope:SetPoint("LEFT", scopeLabel, "RIGHT", 10, 0)
     y = y - 30
     Row(UI.Check(body, "Show \"Explored 7/9\" under zone names on the map", function() return db.hoverLine end,

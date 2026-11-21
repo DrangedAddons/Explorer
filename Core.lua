@@ -16,7 +16,7 @@ local CIRCLE = "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask"
 
 local DEFAULTS = {
     pins = true,            -- pins on the world map
-    scope = "here",         -- which zones get them: "here" (the zone you're in) or "view" (also any zone zoomed in on)
+    others = "faint",       -- a zone you're not in, on its own map: "faint" small markers, full "pins" or "none"
     hoverLine = true,       -- "Explored 7/9" under a zone's name on the map
     announce = true,        -- chat line when an area gets its tick
     size = 24,              -- pin size on a zone map
@@ -192,8 +192,16 @@ local shownScrollX, shownScrollY, scrollSlackX, scrollSlackY
 local wantLevel
 local rects = {}
 
-local BIG_FROM = 0.4     -- a zone this much of the view across gets full pins on OpenMap's map,
-local DOTS_FROM = 0.08   -- this much gets dots, and anything smaller gets nothing
+local BIG_FROM = 0.4     -- OpenMap's map: a zone this much of the view across counts as its own map
+local DOTS_FROM = 0.08   -- (zone level); from this much the zone you're in gets dots; smaller, nothing
+
+-- A pin's style:
+--   "pin"    the spyglass: the zone you're in, on its own map
+--   "dot"    the zone you're in, on its continent's map
+--   "faint"  a zone you're not in, on its own map: small, see-through and under the other
+--            pins, so it shows where to go without getting in the way of the map
+local SIZE = { pin = 1, dot = 0.45, faint = 0.36 }
+local FAINT_ALPHA = 0.6
 
 -- The zone map the player is on. Its areas are the ones that get pins.
 local function PlayerMap()
@@ -232,6 +240,7 @@ end
 local function PinEnter(self)
     local a = self.area
     if not a then return end
+    self:SetAlpha(1)
     self.ring:SetVertexColor(1, 1, 1)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:AddLine(a.name, 1, 0.82, 0)
@@ -243,6 +252,7 @@ end
 
 local function PinLeave(self)
     self.ring:SetVertexColor(1, 0.82, 0)
+    self:SetAlpha(self.style == "faint" and FAINT_ALPHA or 1)
     GameTooltip:Hide()
 end
 
@@ -260,7 +270,6 @@ end
 
 local function NewPin()
     local p = CreateFrame("Button", nil, layer)
-    if not InCombatLockdown() then pcall(p.SetFrameLevel, p, layer:GetFrameLevel() + 1) end
     p.edge = p:CreateTexture(nil, "BACKGROUND")
     p.edge:SetAllPoints()
     p.edge:SetColorTexture(0, 0, 0, 1)
@@ -286,9 +295,11 @@ end
 
 local function SizePin(p, scale)
     -- The canvas is scaled by the zoom; dividing by it keeps pins one size on screen.
-    local size = (p.small and db.size * 0.45 or db.size) / scale
+    local full = p.style == "pin"
+    local size = db.size * SIZE[p.style] / scale
     p:SetSize(size, size)
-    local ringInset = size * (p.small and 0.16 or 0.07)
+    p:SetAlpha(p.style == "faint" and FAINT_ALPHA or 1)
+    local ringInset = size * (full and 0.07 or 0.16)
     p.ring:ClearAllPoints()
     p.ring:SetPoint("TOPLEFT", ringInset, -ringInset)
     p.ring:SetPoint("BOTTOMRIGHT", -ringInset, ringInset)
@@ -296,7 +307,7 @@ local function SizePin(p, scale)
     p.icon:ClearAllPoints()
     p.icon:SetPoint("TOPLEFT", iconInset, -iconInset)
     p.icon:SetPoint("BOTTOMRIGHT", -iconInset, iconInset)
-    p.icon:SetShown(not p.small)
+    p.icon:SetShown(full)
 end
 
 local function CanvasScale(canvas)
@@ -304,14 +315,17 @@ local function CanvasScale(canvas)
     return (s and s > 0) and s or 1
 end
 
-local function Place(a, x, y, small, w, h, scale)
+local function Place(a, x, y, style, w, h, scale)
     used = used + 1
     local p = pins[used]
     if not p then
         p = NewPin()
         pins[used] = p
     end
-    p.area, p.small = a, small
+    p.area, p.style = a, style
+    -- faint markers sit a level under the pins (a frame level can't change in combat)
+    local level = layer:GetFrameLevel() + (style == "faint" and 0 or 1)
+    if p.level ~= level and not InCombatLockdown() and pcall(p.SetFrameLevel, p, level) then p.level = level end
     SizePin(p, scale)
     p:ClearAllPoints()
     p:SetPoint("CENTER", layer, "TOPLEFT", x * w, -y * h)
@@ -343,7 +357,7 @@ local function FitLevel(api)
     wantLevel = want
     if layer:GetFrameLevel() == want or InCombatLockdown() then return end
     pcall(layer.SetFrameLevel, layer, want)
-    for _, p in ipairs(pins) do pcall(p.SetFrameLevel, p, want + 1) end
+    for _, p in ipairs(pins) do p.level = nil end   -- Place sets each pin's again
 end
 
 -- Pins on OpenMap's stitched map. Each zone's corners go through OpenMapAPI to the canvas of
@@ -380,15 +394,15 @@ local function PlaceStitched(api, mapID, w, h, scale, playerMap)
                             if x0 and x1 then
                                 local share = (x1 - x0) * w * scale / across
                                 -- the zone you're in: dots once it's big enough to tell them apart, full
-                                -- pins zoomed in. Other zones: only zoomed in, and only if asked for.
-                                local small = share < BIG_FROM
-                                local wanted
+                                -- pins at zone level. Other zones: at zone level only, as the setting says.
+                                local zoneLevel = share >= BIG_FROM
+                                local style
                                 if a.map == playerMap then
-                                    wanted = share >= DOTS_FROM
-                                else
-                                    wanted = db.scope == "view" and not small
+                                    if zoneLevel then style = "pin" elseif share >= DOTS_FROM then style = "dot" end
+                                elseif zoneLevel and db.others ~= "none" then
+                                    style = db.others == "pins" and "pin" or "faint"
                                 end
-                                if wanted then c = { x0, y0, x1 - x0, y1 - y0, small } end
+                                if style then c = { x0, y0, x1 - x0, y1 - y0, style } end
                             end
                         end
                         corners[a.map] = c
@@ -434,15 +448,17 @@ function NS.RefreshPins()
             for _, a in ipairs(zone.areas) do
                 if not a.done then
                     if a.map == mapID then
-                        if a.map == playerMap or db.scope == "view" then
-                            Place(a, a.x / 100, a.y / 100, false, w, h, scale)
+                        if a.map == playerMap or db.others == "pins" then
+                            Place(a, a.x / 100, a.y / 100, "pin", w, h, scale)
+                        elseif db.others ~= "none" then
+                            Place(a, a.x / 100, a.y / 100, "faint", w, h, scale)
                         end
                     elseif onContinent and a.map == playerMap then
                         -- the zone you're in, as dots on its continent's map
                         local r = RectOn(a.map, mapID)
                         if r then
                             Place(a, r[1] + (r[2] - r[1]) * a.x / 100, r[3] + (r[4] - r[3]) * a.y / 100,
-                                true, w, h, scale)
+                                "dot", w, h, scale)
                         end
                     end
                 end
@@ -588,6 +604,10 @@ frame:SetScript("OnEvent", function(self, event, arg1)
             if db.zonePins ~= nil then   -- 0.1.0's two switches became one
                 db.pins = db.zonePins
                 db.zonePins, db.continentPins = nil, nil
+            end
+            if db.scope ~= nil then      -- 0.3.0's "Pins for" became "Zones I'm not in"
+                if db.scope == "view" then db.others = "pins" end
+                db.scope = nil
             end
             for k, v in pairs(DEFAULTS) do if db[k] == nil then db[k] = v end end
             db.minimap = type(db.minimap) == "table" and db.minimap or { hide = false }

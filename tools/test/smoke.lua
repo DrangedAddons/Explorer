@@ -73,15 +73,17 @@ FlushTimers()
 local canvas = WorldMapFrame.ScrollContainer.Child
 local layer = canvas:GetChildren()
 local function Pins()
-    local n, small, list = 0, 0, {}
+    -- shown pins, how many aren't full pins, the pins, how many are faint markers
+    local n, small, list, faint = 0, 0, {}, 0
     for _, p in ipairs({ layer:GetChildren() }) do
         if p:IsShown() then
             n = n + 1
-            if p.small then small = small + 1 end
+            if p.style ~= "pin" then small = small + 1 end
+            if p.style == "faint" then faint = faint + 1 end
             list[#list + 1] = p
         end
     end
-    return n, small, list
+    return n, small, list, faint
 end
 local function Tick() layer:GetScript("OnUpdate")(layer, 1) end
 local function Count(t) local n = 0; for _ in pairs(t) do n = n + 1 end; return n end
@@ -146,14 +148,31 @@ viewed = 947
 Tick()
 Check(Pins() == 0, "world map: no pins")
 
--- Another zone's map: nothing, unless pins are asked for on any zone looked at.
+-- Another zone's map: small faint markers, a level under the pins. Or full pins, or nothing.
 viewed = 1417
 Tick()
-Check(Pins() == 0, "another zone's map: no pins")
-ns.db.scope = "view"
+do
+    local faint
+    n, small, list, faint = Pins()
+    Check(n == 16 and faint == 16, "another zone's map: 16 faint markers, got " .. n)
+    local p = list[1]
+    Check(p:GetWidth() < 24 * 0.4 and p._alpha == 0.6 and p:GetFrameLevel() == layer:GetFrameLevel(),
+        "a faint marker is small, see-through and under the pins")
+    p:GetScript("OnEnter")(p)
+    Check(p._alpha == 1, "and solid while the mouse is on it")
+    p:GetScript("OnLeave")(p)
+    waypoint = nil
+    p:Click()
+    Check(waypoint and waypoint.map == 1417, "clicking a faint marker sets a waypoint")
+end
+ns.db.others = "pins"
 ns.RefreshPins()
-Check(Pins() == 16, "another zone's map, 'any zone I zoom in on': its 16 pins")
-ns.db.scope = "here"
+n, small = Pins()
+Check(n == 16 and small == 0, "another zone's map, 'Full pins': its 16 pins")
+ns.db.others = "none"
+ns.RefreshPins()
+Check(Pins() == 0, "another zone's map, 'Nothing': none")
+ns.db.others = "faint"
 
 -- Travel there: its pins come up.
 player.map = 1417
@@ -219,39 +238,45 @@ do
     -- Zoomed into Alterac: the map underneath is the zone, and its neighbours are on the canvas too.
     viewed = 1416
     Tick()
-    n, small = Pins()
-    Check(n == 13 and small == 0, "OpenMap, zoomed into the zone you're in: its 13 pins at full size, no others")
-
-    -- Zoomed into a zone you're not in: nothing.
-    viewed = 1417
-    Tick()
-    local others = 0
-    for _, p in ipairs(select(3, Pins())) do if p.area.map ~= 1416 then others = others + 1 end end
-    Check(others == 0, "OpenMap, zoomed into another zone: no pins of its own")
-
-    -- "Any zone I zoom in on": the zones in view get theirs.
-    ns.db.scope = "view"
-    viewed = 1416
-    Tick()
-    n, small, list = Pins()
-    local own, far = 0, 0
+    local faint
+    n, small, list, faint = Pins()
+    local own, far, wrong = 0, 0, 0
     for _, p in ipairs(list) do
         if p.area.map == 1416 then own = own + 1 end
+        if (p.area.map == 1416) ~= (p.style == "pin") then wrong = wrong + 1 end
         local _, _, _, x = p:GetPoint(1)
         if math.abs(x / 1002 - 0.5) > 1.0001 then far = far + 1 end
     end
-    Check(own == 13 and n > own and far == 0, "OpenMap, any zone: the neighbours' pins too, none past the margin (" .. n .. " in all)")
+    Check(own == 13 and wrong == 0 and faint == n - 13 and faint > 0,
+        "OpenMap, zone level: your zone's 13 full pins, the neighbours' as faint markers (" .. faint .. ")")
+    Check(far == 0, "OpenMap: none past the margin")
     scroll.x = 1.2
     Tick()
     local before = n
     n = Pins()
-    Check(n ~= before, "OpenMap, any zone: panning brings in the next zones' pins")
+    Check(n ~= before, "OpenMap: panning brings in the next zones' markers")
     scroll.x = 0.5
+
+    -- Zoomed into a zone you're not in: its areas as faint markers.
+    viewed = 1417
+    Tick()
+    local theirs = 0
+    for _, p in ipairs(select(3, Pins())) do
+        if p.area.map == 1417 and p.style == "faint" then theirs = theirs + 1 end
+    end
+    Check(theirs == 16, "OpenMap, zoomed into another zone: its 16 faint markers")
+
+    ns.db.others = "none"
+    ns.RefreshPins()
+    n, small = Pins()
+    Check(select(4, Pins()) == 0, "OpenMap, 'Nothing': no markers for other zones")
+    ns.db.others = "faint"
+
+    -- Continent level: only the zone you're in, as dots.
     viewed = 1415
     Tick()
-    n, small = Pins()
-    Check(n == 13 and small == 13, "OpenMap, any zone, continent in view: still only your zone's dots")
-    ns.db.scope = "here"
+    n, small, list, faint = Pins()
+    Check(n == 13 and small == 13 and faint == 0, "OpenMap, continent in view: only your zone's dots, no faint markers")
 
     stitched = false
     viewed = 1416

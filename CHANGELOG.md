@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Zones you're not in: open a zone's map and its unexplored areas now show as small faint markers. They are see-through and sit under the full pins, so they don't cover the map. Hover one for the area's name, click it to set a waypoint.
+- Continent maps are unchanged: only the zone you're in shows there, plus the "Explored 7/9" line when you hover a zone.
+- Settings: "Zones I'm not in" picks between small markers (the default), full pins and nothing. It replaces "Pins for".
+
 ## 0.3.0
 
 First release. The addon is now called Explorer (it was ExplorerPins while it was being built).

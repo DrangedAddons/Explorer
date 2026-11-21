@@ -170,6 +170,8 @@ function M.GetStringHeight() return 12 end
 function M.GetTextWidth(o) return #(tostring(o._text or "")) * 7 end
 function M.SetScale(o, s) assert(type(s) == "number" and s > 0, "bad scale"); o._scale = s end
 function M.GetScale(o) return o._scale end
+function M.SetAlpha(o, a) assert(type(a) == "number", "bad alpha"); o._alpha = a end
+function M.GetAlpha(o) return o._alpha or 1 end
 function M.GetEffectiveScale(o) return o._scale end
 function M.SetFrameLevel(o, l) assert(type(l) == "number", "bad level"); o._level = l end
 function M.GetFrameLevel(o) return o._level end

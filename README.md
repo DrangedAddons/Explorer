@@ -5,7 +5,8 @@ World of Warcraft: Forever addon. Puts a pin on the world map for every area you
 ## What it does
 
 - **The zone you're in:** a spyglass pin on each area the challenge hasn't ticked yet. Hover it for the area name and the zone's progress. Click it to set a waypoint there. On the continent map they show as small gold dots.
-- **Other zones:** hover a zone on the map and a line under its name says "Explored 7/9". Fully explored zones have no line. If you want pins for any zone you look at, set "Pins for" to "Any zone I zoom in on" in the settings.
+- **Other zones:** open a zone's map and its unexplored areas show as small faint markers that stay out of the way of the map's other icons. Hover one for its name, click it for a waypoint. "Zones I'm not in" in the settings switches them to full pins or off.
+- **Continent maps:** hover a zone and a line under its name says "Explored 7/9". Fully explored zones have no line. Only the zone you're in has markers at this level.
 - **Chat line** when an area gets its tick, with the zone's new count.
 - `/explorer` (or `/ep`) opens the window: progress per zone (click a zone to open its map) and the settings.
 - `/ep next` sets a waypoint on the nearest unexplored area of the zone you're in.
@@ -13,7 +14,7 @@ World of Warcraft: Forever addon. Puts a pin on the world map for every area you
 
 Waypoints are the game's own map pin, named in WaypointUI when that addon is loaded.
 
-**OpenMap:** pins show on its stitched map at any zoom: full pins once the zone fills a good part of the view, dots when zoomed out. The "Explored 7/9" line shows under the zone name OpenMap puts in the map's hover label.
+**OpenMap:** works on its stitched map at any zoom. Once a zone fills a good part of the view it counts as that zone's map: full pins for the zone you're in, faint markers for the others. Zoomed further out only the zone you're in shows, as dots. The "Explored 7/9" line shows under the zone name OpenMap puts in the map's hover label.
 
 Pins disappear as the challenge ticks the area. Nothing is tracked by the addon itself; it reads the challenge's own ticks.
 
