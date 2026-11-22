@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Eastern Plaguelands: all 22 pins were in the wrong places. Forever redrew this zone's map to a wider area (it now runs out to New Avalon), but the game's data still listed the areas at their spots on the old map. The pins are now worked out for the new map.
+- Checked the other zones for the same fault: Mulgore and Redridge Mountains were also redrawn, and their pins were already right.
+
 ## 0.5.0
 
 - Popup when an area is explored: a banner near the top of the screen with the area's name, its zone and the zone's new count ("Alterac Mountains 8/9"), plus a thin progress bar. It says "fully explored" on a zone's last area. Several areas at once show one after the other. The banner fades out after a few seconds and lets clicks through.

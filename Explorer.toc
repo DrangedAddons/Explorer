@@ -2,7 +2,7 @@
 ## Title: Explorer
 ## Notes: World map pins on every area you still have to visit for the Legacy "Explore" challenges.
 ## Author: Dranged
-## Version: 0.5.0
+## Version: 0.5.1
 ## OptionalDeps: EllesmereUI, WaypointUI, OpenMap
 ## X-DrangedAddons-Games: _forever_
 ## X-DrangedHub-Frame: ExplorerFrame

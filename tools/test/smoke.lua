@@ -104,6 +104,9 @@ do
         end
     end
     Check(bad == 0, "every criterion has one area with a position on the map")
+    -- Eastern Plaguelands' map was redrawn to wider bounds; on Classic's layout this is 31.2, 15.3.
+    local s = ns.Areas[873]
+    Check(s[1] == 1423 and s[2] == 26.4 and s[3] == 10.0, "Stratholme sits where Forever's Eastern Plaguelands map has it")
 end
 
 WorldMapFrame:Show()
