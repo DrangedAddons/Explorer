@@ -502,14 +502,15 @@ do
     -- Out of the zone (a city, nothing to explore there): the way back is a travel leg.
     player.map, player.x, player.y = 1453, 0.5, 0.5
     now = now + 10
+    local asked = trailsTo
     R.Tick()
     ns.RefreshArrow()
     local g = R.Guide()
-    Check(g and g.leg and trailsTo == 1 and arrow.title:GetText() == "Talk to the Flightmaster to travel to Testville",
+    Check(g and g.leg and trailsTo == asked + 1 and arrow.title:GetText() == "Talk to the Flightmaster to travel to Testville",
         "another zone's stop: the arrow shows the first leg of the trip")
     Check(arrow.sub:GetText():find("^to .+, Zone 1416$"), "and where the trip ends: " .. arrow.sub:GetText())
     R.Tick()
-    Check(trailsTo == 1, "the leg isn't looked up again within three seconds")
+    Check(trailsTo == asked + 1, "the leg isn't looked up again within three seconds")
     onTaxi = true
     ns.RefreshArrow()
     Check(arrow.title:GetText() == "In flight" and not arrow.tex:IsShown(), "on a flight: no arrow, just where you're going")

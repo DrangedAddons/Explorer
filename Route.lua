@@ -9,7 +9,8 @@
 --   zones   the zone you're in first, then whichever is quickest to reach from the last
 --           one, by FarstriderLib's travel time (flight paths you know, boats, zeppelins,
 --           the tram, on foot). Those lookups are spread over frames; the first zone's
---           stops are ready at once.
+--           stops are ready at once. Only what the character's faction can ride counts
+--           ("Whose rides" below); a zone with no way there goes last, marked.
 --   guide   the next stop, and when a trip gets there quicker than walking, the first
 --           thing to do ("Talk to the Flightmaster to travel to ...").
 --
@@ -129,6 +130,82 @@ local function Continent(map)
 end
 
 ---------------------------------------------------------
+--  SECTION: Whose rides
+---------------------------------------------------------
+-- A route only rides what the character's faction can: its own flight masters, its own boats
+-- and zeppelins, and the ones open to both. FarstriderLib sorts its flights and most of its
+-- boats by faction when it loads. Two things are left to do here:
+--
+--   flight masters   the ones weighed for a trip are checked against the faction again
+--                    (KnownNodes), whatever the saved list of known ones says
+--   capitals         a ride that starts or ends inside a capital of the other faction is
+--                    closed. FarstriderLib leaves a few of those open to everyone (the Deeprun
+--                    Tram between Stormwind and Ironforge, the portal up to Darnassus).
+
+-- 1 Alliance, 2 Horde, as FarstriderLib's flight masters are marked; 0 when the game won't say.
+local function Side()
+    local faction, name = nil, nil
+    if UnitFactionGroup then faction, name = UnitFactionGroup("player") end
+    return faction == "Alliance" and 1 or faction == "Horde" and 2 or 0, name or faction
+end
+
+-- Whether a flight master's mark (1, 2 or 3 for both) covers a side.
+local function Serves(mark, side)
+    return side ~= 0 and type(mark) == "number" and (mark == side or mark == 3)
+end
+
+-- The capital cities' maps, and whose each is.
+local CAPITALS = { [1453] = 1, [1455] = 1, [1457] = 1, [1454] = 2, [1456] = 2, [1458] = 2 }
+
+-- The capital of the other faction a place in the world lies in (its map), or nil.
+local function EnemyCapital(inst, wx, wy)
+    local side = Side()
+    if side == 0 then return nil end
+    for map, owner in pairs(CAPITALS) do
+        if owner ~= side then
+            local x, y = NS.MapPos(map, inst, wx, wy)
+            if x and x >= 0 and x <= 1 and y >= 0 and y <= 1 then return map end
+        end
+    end
+end
+
+-- Where an end of one of FarstriderLib's connections is in the world, when it has a fixed place.
+local function EndInWorld(side)
+    local loc = type(side) == "table" and side.loc
+    local pos = type(loc) == "table" and loc.pos
+    if type(pos) ~= "table" or type(loc.mapId) ~= "number" or type(pos.x) ~= "number" or type(pos.y) ~= "number" then return nil end
+    if loc.isUI then return NS.WorldPos(loc.mapId, pos.x, pos.y) end
+    return loc.mapId, pos.x, pos.y
+end
+
+local function Never() return false end
+
+-- Closes the rides with an end in a capital of the other faction, in the list the running
+-- copy of FarstriderLib builds its graph from. Returns how many it closed this time; the
+-- graph has to be built (again) after that for it to count.
+local function CloseEnemyRides()
+    local api = FarstriderLibData_API
+    local list = type(api) == "table" and api.WAYPOINTS
+    if type(list) ~= "table" or Side() == 0 then return 0 end
+    local closed = 0
+    for _, w in ipairs(list) do
+        if type(w) == "table" and not w.explorerClosed and type(w.from) == "table" and type(w.to) == "table" then
+            local i1, x1, y1 = EndInWorld(w.from)
+            local i2, x2, y2 = EndInWorld(w.to)
+            if (i1 and EnemyCapital(i1, x1, y1)) or (i2 and EnemyCapital(i2, x2, y2)) then
+                w.explorerClosed = true
+                w.from.condition, w.to.condition = Never, Never   -- one for each way along it
+                closed = closed + 1
+            end
+        end
+    end
+    return closed
+end
+-- Before FarstriderLib builds its graph at login. (Looked at again on entering the world, in
+-- case a newer copy of the library in another addon took over after this file loaded.)
+pcall(CloseEnemyRides)
+
+---------------------------------------------------------
 --  SECTION: What's left, and what it costs to get there
 ---------------------------------------------------------
 local skipped = {}   -- [overlay] = true: stops passed over with /ep skip, until /ep route
@@ -218,10 +295,9 @@ local function KnownNodes(inst)
     local saved = FarstriderLibData_CharacterSettings
     local known = type(saved) == "table" and saved.knownTaxiNodes
     if type(data) == "table" and type(known) == "table" then
-        local faction = UnitFactionGroup and UnitFactionGroup("player")
-        local mask = faction == "Alliance" and 1 or faction == "Horde" and 2 or 0
+        local side = Side()
         for id, n in pairs(data) do
-            if known[id] == true and n[1] == inst and (n[5] == 3 or n[5] == mask) then
+            if known[id] == true and n[1] == inst and Serves(n[5], side) then
                 list[#list + 1] = { id = id, inst = inst, x = n[2], y = n[3], name = n[6] }
             end
         end
@@ -313,24 +389,29 @@ local function Flight(a, b)
     if f then return f[1], f[2] end
 end
 
--- FarstriderLib's whole route between two places, walks as straight lines and all: for
--- where the walking data doesn't reach.
+-- FarstriderLib's whole route between two places, walks as straight lines and all: seconds,
+-- and whether any of it is a ride. nil when it has no route.
 local function Whole(from, to)
     local api = FarstriderLib_API
     if type(api) == "table" and api.FindTrail then
         local ok, steps, _, edges = pcall(api.FindTrail, from.map, from.x, from.y, 0, to.map, to.x, to.y, 0)
-        if ok then
-            local seconds = Trail(steps, edges)
-            if seconds then return seconds end
-        end
+        if ok then return Trail(steps, edges) end
     end
-    local yards = NS.Between(from.map, from.x, from.y, to.map, to.x, to.y)
-    return yards and yards * WALK or FAR
 end
 
 -- From one place to another: seconds, the trip when a trip is the way ({ dep, arr, step,
--- seconds }; dep is nil when FarstriderLib picks where to leave from), and the walk's
--- seconds when there is a walk. `tries` is how many flight masters are weighed at each end.
+-- seconds }; dep is nil when FarstriderLib picks where to leave from), the walk's seconds
+-- when there is a walk, and how it's done:
+--
+--   "walk"   on foot all the way
+--   "trip"   by the trip
+--   "ride"   by FarstriderLib's whole route, which rides something: where there is no walk
+--            and no flight master the character knows to make a trip of
+--   "none"   there is no way: no walk (an island, another continent) and nothing this
+--            faction can ride. The seconds are FAR.
+--   "guess"  the walking data doesn't cover it and nothing rides there: the bird's distance
+--
+-- `tries` is how many flight masters are weighed at each end.
 local function Travel(from, to, tries, pause)
     local navFrom, navTo = Resolve(from), Resolve(to)
     local speed = RideSpeed()
@@ -376,8 +457,51 @@ local function Travel(from, to, tries, pause)
             end
         end
     end
-    if best then return best, trip, walk end
-    return Whole(from, to), nil, nil
+    if best then return best, trip, walk, trip and "trip" or "walk" end
+    local seconds, rides = Whole(from, to)
+    if seconds and rides then return seconds, nil, nil, "ride" end
+    -- Nothing to ride. Where the walking data knows both ends it has already said there is no
+    -- walk, and from one continent to another there never is one: no way. A walk made up from
+    -- the bird's distance would send a Horde character swimming for Teldrassil.
+    if (navFrom and navTo) or (from.inst and to.inst and from.inst ~= to.inst) then return FAR, nil, nil, "none" end
+    local yards = NS.Between(from.map, from.x, from.y, to.map, to.x, to.y)
+    return seconds or (yards and yards * WALK) or FAR, nil, nil, "guess"
+end
+
+-- The explore pin nearest a place, as a place: { map, x, y, pin }.
+local pinsInWorld
+local function NearestPin(p)
+    if not p.inst then return nil end
+    if not pinsInWorld then
+        pinsInWorld = {}
+        for overlay, a in pairs(NS.Areas or {}) do
+            local inst, wx, wy = NS.WorldPos(a[1], a[2] / 100, a[3] / 100)
+            if inst then pinsInWorld[#pinsInWorld + 1] = { overlay = overlay, map = a[1], x = a[2] / 100, y = a[3] / 100, inst = inst, wx = wx, wy = wy } end
+        end
+    end
+    local best, near
+    for _, q in ipairs(pinsInWorld) do
+        if q.inst == p.inst then
+            local d = (q.wx - p.wx) ^ 2 + (q.wy - p.wy) ^ 2
+            if not near or d < near then best, near = q, d end
+        end
+    end
+    return best and { map = best.map, x = best.x, y = best.y, pin = best.overlay }
+end
+
+-- Travel from where the player stands. "No way" from there is only believed when the pin
+-- nearest the player has none either: the player may stand where the walking data is blind
+-- (indoors, on a boat, on a ledge the grid has closed off), and then all there is to go on
+-- is the bird's distance.
+local function TravelFromPlayer(me, to, tries, pause)
+    local seconds, trip, walk, how = Travel(me, to, tries, pause)
+    if how ~= "none" then return seconds, trip, walk, how end
+    local pin = NearestPin(me)
+    if pin and pin.pin ~= to.pin then
+        local fromPin, _, _, howPin = Travel(pin, to, tries, pause)
+        if howPin ~= "none" then return fromPin, nil, nil, "guess" end
+    end
+    return seconds, nil, nil, how
 end
 
 ---------------------------------------------------------
@@ -542,11 +666,11 @@ local function Build(p)
         end
         return place
     end
-    local function Add(c, sx, sy, rough)
+    local function Add(c, sx, sy, rough, noWay)
         local path = OrderStops(c.left, sx, sy)
         local stops = {}
         for i, a in ipairs(path) do stops[i] = a.overlay end
-        p.order[#p.order + 1] = { id = c.zone.id, map = c.map, stops = stops, rough = rough }
+        p.order[#p.order + 1] = { id = c.zone.id, map = c.map, stops = stops, rough = rough, noWay = noWay }
         local last = path[#path]
         from, curMap, curX, curY = c, last.map, last.x / 100, last.y / 100
         Changed()
@@ -559,31 +683,54 @@ local function Build(p)
             break
         end
     end
+    -- A zone there is no way to from where the route stands (c.lost) waits: no road, and no
+    -- ride this faction can take. Teldrassil, for the Horde. It goes in once everything with
+    -- a way is placed, marked as having none. If nothing left has a way, it's where the route
+    -- stands that is cut off: the nearest zone goes next, marked, and the rest are weighed
+    -- again from there.
     while #cands > 0 do
-        local best, bestTime
-        for _, c in ipairs(Shortlist(cands, curMap, curX, curY)) do
-            local key = from and (from.zone.id .. ">" .. c.zone.id)
-            local t = key and times[key]
-            if not t then
-                coroutine.yield()
-                if from then
-                    t = Travel(Place(from), Place(c), 2, coroutine.yield)
-                    times[key] = t
-                else
-                    t = Travel(me, Place(c), 2, coroutine.yield)
+        local open = {}
+        for _, c in ipairs(cands) do
+            if not c.lost then open[#open + 1] = c end
+        end
+        local best, bestTime, noWay
+        if #open == 0 then
+            best, noWay = Shortlist(cands, curMap, curX, curY)[1], true
+            for _, c in ipairs(cands) do c.lost = nil end
+        else
+            for _, c in ipairs(Shortlist(open, curMap, curX, curY)) do
+                local key = from and (from.zone.id .. ">" .. c.zone.id)
+                local t
+                if key then t = times[key] end   -- seconds, or false for no way
+                if t == nil then
+                    coroutine.yield()
+                    local how
+                    if from then
+                        t, _, _, how = Travel(Place(from), Place(c), 2, coroutine.yield)
+                    else
+                        t, _, _, how = TravelFromPlayer(me, Place(c), 2, coroutine.yield)
+                    end
+                    if how == "none" then t = false end
+                    if key then times[key] = t end
+                end
+                if not t then
+                    c.lost = true
+                elseif not bestTime or t < bestTime then
+                    best, bestTime = c, t
                 end
             end
-            if not bestTime or t < bestTime then best, bestTime = c, t end
         end
-        for i, c in ipairs(cands) do
-            if c == best then table.remove(cands, i) break end
+        if best then
+            for i, c in ipairs(cands) do
+                if c == best then table.remove(cands, i) break end
+            end
+            -- the zone's path starts from where the route comes in, as near as the maps can say
+            local sx, sy
+            local inst, wx, wy = NS.WorldPos(curMap, curX, curY)
+            if inst then sx, sy = NS.MapPos(best.map, inst, wx, wy) end
+            if sx then sx, sy = sx * 100, sy * 100 end
+            Add(best, sx, sy, true, noWay)
         end
-        -- the zone's path starts from where the route comes in, as near as the maps can say
-        local sx, sy
-        local inst, wx, wy = NS.WorldPos(curMap, curX, curY)
-        if inst then sx, sy = NS.MapPos(best.map, inst, wx, wy) end
-        if sx then sx, sy = sx * 100, sy * 100 end
-        Add(best, sx, sy, true)
     end
     p.done = true
 end
@@ -757,21 +904,28 @@ local function Leg(stop)
 end
 
 -- How to get to a stop from where the player stands: the first leg of a trip
--- ({ map, x, y, text }) and the trip, or nil to walk.
+-- ({ map, x, y, text }) or nil to walk, the trip, and how it's done (see Travel).
 function Route.FindTrip(stop, pm, px, py, pause)
     local from = { map = pm, x = px, y = py, player = true }
     local to = { map = stop.map, x = stop.x / 100, y = stop.y / 100, pin = stop.overlay }
-    local _, trip, walk = Travel(from, to, 3, pause)
+    local _, trip, _, how = TravelFromPlayer(from, to, 3, pause)
     if trip then
         local leg = StepLeg(trip.step)
         if not leg and trip.dep and NodeOnMap(trip.dep) then
             leg = { map = trip.dep.map, x = trip.dep.mx, y = trip.dep.my,
                 text = ("Fly from %s to %s"):format(trip.dep.name, trip.arr.name) }
         end
-        return leg, trip
+        return leg, trip, how
     end
-    if not walk and pm ~= stop.map then return Leg(stop) end
-    return nil
+    if how == "ride" then return Leg(stop), nil, how end
+    return nil, nil, how
+end
+
+-- What the arrow and the window say where there is no way to a stop.
+function Route.NoWayText()
+    local side, name = Side()
+    if side == 0 or type(name) ~= "string" then return "No way there: no road, flight or boat" end
+    return ("No way there for the %s: no road, flight or boat"):format(name)
 end
 
 -- The walk from the player to the stop (or to the first leg of the trip): g.way, with the
@@ -839,8 +993,8 @@ local function UpdateGuide(pm, px, py, onTaxi)
     if not tripfinder and (g.tripFrom ~= pm or not g.tripAt or now - g.tripAt >= TRIP_EVERY) then
         g.tripFrom, g.tripAt = pm, now
         tripfinder = coroutine.create(function()
-            local leg = Route.FindTrip(stop, pm, px, py, coroutine.yield)
-            if guide == g then g.leg = leg end
+            local leg, _, how = Route.FindTrip(stop, pm, px, py, coroutine.yield)
+            if guide == g then g.leg, g.noWay = leg, how == "none" end
         end)
         local ok = coroutine.resume(tripfinder)
         if not ok or coroutine.status(tripfinder) == "dead" then tripfinder = nil end
@@ -910,7 +1064,8 @@ function Route.Next()
     return NS.AreaByOverlay(e.stops[1]), e
 end
 
--- { stop = area, entry, leg = { map, x, y, text } or nil }, or nil with nowhere to go.
+-- { stop = area, entry, leg = { map, x, y, text } or nil, noWay = true when there is no way
+-- to the stop from where the player stands }, or nil with nowhere to go.
 function Route.Guide() return guide end
 
 -- The zones in order, and whether the order is complete.
@@ -971,8 +1126,12 @@ frame:SetScript("OnEvent", function(_, event)
         times, stale = {}, true    -- a faster mount changes the travel times, and more zones are in reach
     else
         lastMap = nil
-        -- FarstriderLib rebuilds its graph when a flight master's map teaches it new flight paths
         local api = FarstriderLib_API
+        -- a copy of the library that took over after this file loaded has built its graph
+        -- with the other faction's capitals still open
+        local ok, closed = pcall(CloseEnemyRides)
+        if ok and closed > 0 and type(api) == "table" and api.Rebuild then pcall(api.Rebuild) end
+        -- FarstriderLib rebuilds its graph when a flight master's map teaches it new flight paths
         if not Route.hooked and type(api) == "table" and api.RegisterRebuildCallback then
             Route.hooked = pcall(api.RegisterRebuildCallback, function() times = {}; ForgetTravel() end)
         end
@@ -995,3 +1154,5 @@ end)
 
 Route.Tick = Tick   -- for the settings and the tests
 Route.Step = Step
+Route.Travel = Travel            -- for the tests
+Route.ForgetTravel = ForgetTravel

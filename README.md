@@ -8,7 +8,7 @@ World of Warcraft: Forever addon. Puts a pin on the world map for every area you
 - **Other zones:** open a zone's map and its unexplored areas show as small faint markers that stay out of the way of the map's other icons. Hover one for its name, click it for a waypoint. "Zones I'm not in" in the settings switches them to full pins or off.
 - **Continent maps:** hover a zone and a line under its name says "Explored 7/9". Fully explored zones have no line. Only the zone you're in has markers at this level.
 - **Progress:** each area's state is the challenge's tick, or the character's own map where the challenge says nothing. `/ep check` prints what the game reports for a zone, area by area.
-- **Route:** the areas you have left, in an order worth walking. Your zone's areas come first, as a short path from where you stand, measured by the ground and the roads; then the other zones, each time the one quickest to reach (flight paths you know, boats, zeppelins, the tram). Pins are numbered in that order and joined by a line. "Route covers" in the settings picks your zone, your continent or everything, and zones more than 5 levels above you are left out unless you say otherwise.
+- **Route:** the areas you have left, in an order worth walking. Your zone's areas come first, as a short path from where you stand, measured by the ground and the roads; then the other zones, each time the one quickest to reach (flight paths you know, boats, zeppelins, the tram). It only rides what your faction can: its own flight masters, boats and zeppelins and the ones open to both, and nothing that starts or ends inside a capital of the other faction. A zone with no way there (Teldrassil, for the Horde) comes last and is marked. Pins are numbered in that order and joined by a line. "Route covers" in the settings picks your zone, your continent or everything, and zones more than 5 levels above you are left out unless you say otherwise.
 - **Arrow:** points at the next stop and turns as you turn, with the stop's name, distance and time. Where the straight line is blocked it points along the road. For a stop in another zone it points at the first leg of the trip ("Talk to the Flightmaster to travel to ..."). Click it for a waypoint, right-click to skip the stop, drag to move, scroll to resize.
 - **Popup** when an area gets its tick: a banner near the top of the screen with the area, its zone and the zone's new count. `/ep test` (or "Sample" in the settings) shows a sample you can drag to move, scroll on to resize, and right-click to reset.
 - **Chat line** for the same, if you want it in the log too.
@@ -50,6 +50,13 @@ The data in `Nav/` is built from AzerothGPS's data, (c) AzerothGPS, all rights r
 AzerothGPS's roads come in dozens of unconnected pieces (it has an off-road router of its own for the gaps). `tools/shape_nav.py` (run by the build) does that part ahead of time, over that ground, into `Nav/Shapes.lua`: walks between roads that pass close to each other, walks that join the pieces, the walk from every explore pin and every flight master to the junctions nearest it, and a walk between pins that are close together with something in the way. Roads are only joined over open ground, or where a road stops and carries on across a short gap. A pin that itself stands on blocked ground crosses as little of it as will do. It takes about ten minutes to run.
 
 `tools/test/sweep.py` checks the result zone by zone: the walk between every two pins of a zone, how much of it is over blocked ground away from the roads, and how it compares with the straight distance. It covers the Eastern Kingdoms and Kalimdor; anywhere else a walk is a straight line.
+
+## Tests
+
+`python tools/test/run.py [folder holding lupa]` loads the addon in Lua 5.1 against a stand-in for the game's frame API and runs:
+
+- `smoke.lua`: the addon's own logic (pins, progress, popup, route, arrow, window) in a made-up world, once for each look.
+- `factions.lua`: every journey between two zones, once as Alliance and once as Horde, in the real world: the game's map bounds (`world.lua`, written by `make_world.py` from the game's map tables) and the addon loaded whole in its `.toc`'s order, bundled FarstriderLib and all. It checks that no journey rides anything of the other faction's, and that a journey with no way is told as one. `--quick` runs it from five zones only.
 
 ## Install
 

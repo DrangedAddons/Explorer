@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.1
+
+Faction, for flight masters, boats, zeppelins and the tram.
+
+- The route only rides what your faction can. Flight masters and most boats were already sorted by faction (by the bundled FarstriderLib). Now a ride that starts or ends inside a capital of the other faction is closed as well. That shuts the Deeprun Tram for the Horde: it was open to everyone, and came up on a Horde character's way from Durotar to Dun Morogh. It also shuts the portal from Rut'theran Village up to Darnassus for the Horde.
+- Where there is no way to a zone, the route says so. A Horde character has no road to Teldrassil and nothing of the Horde's to ride there. The route used to make up a walk from the bird's distance, put Teldrassil right after Darkshore and point the arrow across the sea. Now Teldrassil comes last in the route, the window marks it "no way there", and the arrow says "No way there for the Horde: no road, flight or boat".
+- A stop in your own zone that you can only ride to gets its ride. For the Alliance, Rut'theran Village and the rest of Teldrassil are joined by the portal.
+- The flight masters weighed for a trip are checked against your faction, whatever the saved list of known ones says.
+- New test: every journey between two zones (1,806 of them) with no flight master known, with your faction's, and with every one there is, once as Alliance and once as Horde. It runs against the game's real map bounds and the real bundled pathfinder, where the tests before it used a made-up world, a stand-in pathfinder and an Alliance character only. No journey rides anything of the other faction's.
+
 ## 0.9.0
 
 Two reports from players, and what was behind them.

@@ -170,7 +170,9 @@ local function Refresh()
     end
 
     local dist = ""
-    if yards and not flying then
+    if g.noWay and not flying then
+        dist = NS.Route.NoWayText()   -- the arrow still points at it, as the bird flies
+    elseif yards and not flying then
         if not leg and not byRoad and yards < HERE then
             dist = "You're at the pin. Walk around until it ticks."
         else

@@ -33,7 +33,7 @@ local function ZoneRows()
         local zone = byId[e.id]
         if zone and not placed[zone] then
             placed[zone] = true
-            rows[#rows + 1] = { zone = zone, stop = i }
+            rows[#rows + 1] = { zone = zone, stop = i, noWay = e.noWay }
         end
     end
     for _, zone in ipairs(NS.Progress()) do
@@ -95,6 +95,11 @@ local function BuildWindow()
             row.count:SetText(("level %d   %d/%d"):format(NS.ZoneLevels[zone.map], zone.done, zone.total))
             row.text:SetTextColor(0.7, 0.7, 0.7)
             row.count:SetTextColor(0.9, 0.45, 0.3)
+        elseif r.noWay then
+            -- in the route, last: no road there and nothing this faction can ride
+            row.count:SetText(("no way there   %d/%d"):format(zone.done, zone.total))
+            row.text:SetTextColor(0.7, 0.7, 0.7)
+            row.count:SetTextColor(0.9, 0.45, 0.3)
         else
             row.count:SetText(zone.done .. "/" .. zone.total)
             row.text:SetTextColor(1, 1, 1)
@@ -111,7 +116,9 @@ local function BuildWindow()
         summary:SetText(text)
         local stop = db.route and NS.Route.Next()
         if stop then
-            nextLine:SetText(("Next stop: |cffffd100%s|r, %s"):format(stop.name, stop.zone.name))
+            local g = NS.Route.Guide()
+            nextLine:SetText(("Next stop: |cffffd100%s|r, %s%s"):format(stop.name, stop.zone.name,
+                g and g.noWay and (". |cffe6734d%s.|r"):format(NS.Route.NoWayText()) or ""))
         elseif db.route then
             nextLine:SetText(total > done and "No route: nothing left that the route settings cover." or "")
         else

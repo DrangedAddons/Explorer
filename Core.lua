@@ -933,8 +933,8 @@ local function PrintRoute()
             break
         end
         local a = NS.AreaByOverlay(e.stops[1])
-        NS.Print(("  %d. %s: %d stops%s"):format(i, a and a.zone.name or "?", #e.stops,
-            i == 1 and a and (", first " .. a.name) or ""))
+        NS.Print(("  %d. %s: %d stops%s%s"):format(i, a and a.zone.name or "?", #e.stops,
+            i == 1 and a and (", first " .. a.name) or "", e.noWay and (". " .. NS.Route.NoWayText()) or ""))
     end
     if not done then NS.Print("  (still working out the zones after these)") end
 end
