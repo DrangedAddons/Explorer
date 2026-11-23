@@ -24,6 +24,7 @@ local DEFAULTS = {
     arrow = true,           -- the on-screen arrow to the route's next stop (Arrow.lua)
     routeScope = "all",     -- what the route covers: this "zone", this "continent" or "all"
     routeAllLevels = false, -- route through zones well above your level too
+    othersRides = true,     -- where nothing else gets to a zone, take the other faction's boats and zeppelins
     size = 24,              -- pin size on a zone map
     theme = "auto",
 }
@@ -934,7 +935,8 @@ local function PrintRoute()
         end
         local a = NS.AreaByOverlay(e.stops[1])
         NS.Print(("  %d. %s: %d stops%s%s"):format(i, a and a.zone.name or "?", #e.stops,
-            i == 1 and a and (", first " .. a.name) or "", e.noWay and (". " .. NS.Route.NoWayText()) or ""))
+            i == 1 and a and (", first " .. a.name) or "",
+            e.noWay and (". " .. NS.Route.NoWayText()) or e.others and (", " .. NS.Route.OthersText()) or ""))
     end
     if not done then NS.Print("  (still working out the zones after these)") end
 end

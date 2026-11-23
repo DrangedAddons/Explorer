@@ -13,6 +13,9 @@ Libs/Farstrider.lua: NS.FarstriderLib and NS.FarstriderLibData. Nothing else is 
 
 Other copies on the machine (WaypointUI installs them as addons) are fine: the library
 picks the newest copy at load and the others stand down.
+
+Afterwards run tools/build_rides.py: Rides.lua (the other faction's boats and zeppelins) is
+read out of the library.
 """
 import os
 import re

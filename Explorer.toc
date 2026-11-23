@@ -2,7 +2,7 @@
 ## Title: Explorer
 ## Notes: Map pins, a route and an arrow for every area you still have to visit for the Legacy "Explore" challenges.
 ## Author: Dranged
-## Version: 0.9.1
+## Version: 0.10.0
 ## OptionalDeps: EllesmereUI, WaypointUI, OpenMap
 ## X-DrangedAddons-Games: _forever_
 ## X-DrangedHub-Frame: ExplorerFrame
@@ -29,6 +29,7 @@ Nav\Terrain.lua
 Nav\Roads.lua
 Nav\Shapes.lua
 Nav.lua
+Rides.lua
 Route.lua
 Toast.lua
 Arrow.lua

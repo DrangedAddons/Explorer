@@ -10,7 +10,7 @@ local UI = NS.UI
 local ICON = "Interface\\AddOns\\Explorer\\icon"
 
 local LEFT_W, RIGHT_W, GAP = 424, 380, 24
-local LIST_ROWS = 17
+local LIST_ROWS = 18
 
 local window
 
@@ -33,7 +33,7 @@ local function ZoneRows()
         local zone = byId[e.id]
         if zone and not placed[zone] then
             placed[zone] = true
-            rows[#rows + 1] = { zone = zone, stop = i, noWay = e.noWay }
+            rows[#rows + 1] = { zone = zone, stop = i, noWay = e.noWay, others = e.others }
         end
     end
     for _, zone in ipairs(NS.Progress()) do
@@ -52,7 +52,7 @@ end
 
 local function BuildWindow()
     local db = NS.db
-    window = UI.Window({ name = "ExplorerFrame", title = "Explorer", width = 18 + LEFT_W + GAP + RIGHT_W + 18, height = 520 })
+    window = UI.Window({ name = "ExplorerFrame", title = "Explorer", width = 18 + LEFT_W + GAP + RIGHT_W + 18, height = 546 })
     local body = window.body
 
     ---------------------------------------------------------
@@ -96,9 +96,14 @@ local function BuildWindow()
             row.text:SetTextColor(0.7, 0.7, 0.7)
             row.count:SetTextColor(0.9, 0.45, 0.3)
         elseif r.noWay then
-            -- in the route, last: no road there and nothing this faction can ride
+            -- in the route, last: no road there and nothing to ride
             row.count:SetText(("no way there   %d/%d"):format(zone.done, zone.total))
             row.text:SetTextColor(0.7, 0.7, 0.7)
+            row.count:SetTextColor(0.9, 0.45, 0.3)
+        elseif r.others then
+            -- the only way there is by the other faction's boats
+            row.count:SetText(("%s   %d/%d"):format(NS.Route.OthersText(), zone.done, zone.total))
+            row.text:SetTextColor(1, 1, 1)
             row.count:SetTextColor(0.9, 0.45, 0.3)
         else
             row.count:SetText(zone.done .. "/" .. zone.total)
@@ -118,7 +123,8 @@ local function BuildWindow()
         if stop then
             local g = NS.Route.Guide()
             nextLine:SetText(("Next stop: |cffffd100%s|r, %s%s"):format(stop.name, stop.zone.name,
-                g and g.noWay and (". |cffe6734d%s.|r"):format(NS.Route.NoWayText()) or ""))
+                g and g.noWay and (". |cffe6734d%s.|r"):format(NS.Route.NoWayText())
+                    or g and g.others and (", |cffe6734d%s|r"):format(NS.Route.OthersText()) or ""))
         elseif db.route then
             nextLine:SetText(total > done and "No route: nothing left that the route settings cover." or "")
         else
@@ -158,7 +164,9 @@ local function BuildWindow()
         }
     end, function() return db.routeScope end, function(v) db.routeScope = v; Refreshed() end))
     Right(UI.Check(body, "Leave out zones more than 5 levels above me", function() return not db.routeAllLevels end,
-        function(v) db.routeAllLevels = not v; Refreshed() end), 34)
+        function(v) db.routeAllLevels = not v; Refreshed() end))
+    Right(UI.Check(body, "Use the other faction's boats where nothing else goes", function() return db.othersRides end,
+        function(v) db.othersRides = v; Refreshed() end), 34)
 
     Right(UI.Text(body, "Map", "GameFontNormal"), 20)
     Right(UI.Check(body, "Show pins on the world map", function() return db.pins end,

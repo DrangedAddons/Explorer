@@ -205,13 +205,14 @@ local function FromXml(dir, file, out)
     end
 end
 
--- Loads everything the .toc lists but the libraries the mock stands in for.
-function LoadWhole(dir)
+-- Loads everything the .toc lists but the libraries the mock stands in for. With
+-- `libraryOnly`, just the bundled FarstriderLib, as it is without Explorer.
+function LoadWhole(dir, libraryOnly)
     local files = {}
     for line in Read(dir .. "/Explorer.toc"):gmatch("[^\r\n]+") do
         line = line:gsub("^%s+", ""):gsub("%s+$", ""):gsub("\\", "/")
         local stood = line:find("LibStub") or line:find("CallbackHandler") or line:find("LibDataBroker") or line:find("LibDBIcon")
-        if line ~= "" and line:sub(1, 1) ~= "#" and not stood then
+        if line ~= "" and line:sub(1, 1) ~= "#" and not stood and (not libraryOnly or line:find("Farstrider")) then
             if line:lower():match("%.xml$") then FromXml(dir, line, files) else files[#files + 1] = line end
         end
     end
@@ -219,7 +220,6 @@ function LoadWhole(dir)
     for _, file in ipairs(files) do
         local chunk = assert(loadstring(Read(dir .. "/" .. file), "=" .. file))
         chunk("Explorer", ns)
-        if ns.Zones and not ZONES_READY then ZONES_READY = true end
     end
     FireEvent("ADDON_LOADED", "Explorer")
     FireEvent("PLAYER_LOGIN")

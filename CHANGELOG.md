@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0
+
+The other faction's boats, as a last resort.
+
+- A Horde character had no way to Teldrassil (0.9.1 said so). The only way there is the Alliance's: the boat from Auberdine to Rut'theran Village, then the portal up to Darnassus. Where your own roads and rides get nowhere, the route now takes the other faction's boats and zeppelins and the rides 0.9.1 closed, as few of them as will do. For the Horde that is those two, for Teldrassil, and nothing else: no boat from Menethil Harbor, no tram. The Alliance has a way everywhere and never needs it.
+- Such a ride says whose it is: "Take the boat from Auberdine to Rut'theran Village (Alliance)". The zone's row in the window reads "only by Alliance rides", and so does the next stop's line.
+- Teldrassil goes where its travel time puts it, after Darkshore, not last.
+- New setting, on by default: "Use the other faction's boats where nothing else goes". Off, Teldrassil goes last for the Horde and is marked "no way there", as in 0.9.1.
+- The rides come from the bundled FarstriderLib, which only loads a faction's own. `tools/build_rides.py` loads it once as each faction and writes what the other one is offered to `Rides.lua`.
+- The window is one row taller for the new setting.
+
+Not checked in game: that a Horde character can board at Auberdine on WoW Forever, as on Classic. If the guards or the boat say no, turn the setting off.
+
 ## 0.9.1
 
 Faction, for flight masters, boats, zeppelins and the tram.
