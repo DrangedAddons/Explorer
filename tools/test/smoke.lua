@@ -53,8 +53,9 @@ C_Map = {
     GetMapInfo = function(id)
         if CONTINENTS[id] then return { name = "Continent " .. id, mapType = 2, parentMapID = 947 } end
         if id == 947 then return { name = "Azeroth", mapType = 1, parentMapID = 0 } end
-        -- every zone hangs off Eastern Kingdoms here; enough to test the dots
-        return { name = "Zone " .. id, mapType = 3, parentMapID = 1415 }
+        -- every zone hangs off Eastern Kingdoms here (enough to test the dots), but for the three
+        -- Kalimdor zones the travel tests stand in
+        return { name = "Zone " .. id, mapType = 3, parentMapID = (id == 2482 or id == 1441 or id == 1446) and 1414 or 1415 }
     end,
     GetMapRectOnMap = function(zone, on) return 0.2, 0.4, 0.1, 0.3 end,
     GetBestMapForUnit = function() return player.map end,
@@ -73,9 +74,21 @@ local function MapOrigin(map) return -math.floor(map / 7) % 7 * 1100, -(map % 7)
 function CreateVector2D(x, y) return { x = x, y = y, GetXY = function(self) return self.x, self.y end } end
 local function EPL(x, y) return 3691.67 + y * (825 - 3691.67), -2256.25 + x * (-6558.33 + 2256.25) end
 local function HYJAL(x, y) return 6304.17 + y * (3989.58 - 6304.17), -922.92 + x * (-4395.83 + 922.92) end
+-- { left, right, top, bottom } in world yards (UiMapAssignment): Thousand Needles, Tanaris, Kalimdor
+local REAL = { [1441] = { -433.33, -4833.33, -3966.67, -6900 }, [1446] = { -218.75, -7118.75, -5875, -10475 },
+    [1414] = { 17066.6, -19733.2, 12799.9, -11733.3 } }
+local function OnReal(map, x, y)
+    local b = REAL[map]
+    return b[3] + y * (b[4] - b[3]), b[1] + x * (b[2] - b[1])
+end
+local function FromReal(map, wx, wy)
+    local b = REAL[map]
+    return (wy - b[1]) / (b[2] - b[1]), (wx - b[3]) / (b[4] - b[3])
+end
 C_Map.GetWorldPosFromMapPos = function(map, v)
     if map == 1423 then return 0, CreateVector2D(EPL(v.x, v.y)) end
     if map == 2482 then return 1, CreateVector2D(HYJAL(v.x, v.y)) end
+    if REAL[map] then return 1, CreateVector2D(OnReal(map, v.x, v.y)) end
     local bx, by = MapOrigin(map)
     return 99, CreateVector2D(bx - v.y * 1000, by - v.x * 1500)
 end
@@ -89,6 +102,17 @@ function debugprofilestop() return 0 end
 -- The pathfinder: a tenth of a second a yard, and a flight to anywhere outside the zone you're in.
 local trails, trailsTo = 0, 0
 local flyInZone = false   -- the pathfinder offers a flight inside the zone you're in
+-- The flight masters: FarstriderLib's own list, and which of them the character knows.
+do
+    local lib = { FarstriderLibData = { Internal = {} } }
+    local fh = assert(io.open(ADDON_DIR .. "/Libs/FarstriderLibData/Taxi/Camelot/FarstriderLibData_Taxi.lua", "rb"))
+    local src = fh:read("*a")
+    fh:close()
+    assert(loadstring(src, "=FarstriderLibData_Taxi.lua"))("Explorer", lib)
+    FarstriderLibData = lib.FarstriderLibData
+end
+FarstriderLibData_CharacterSettings = { knownTaxiNodes = {} }
+function UnitFactionGroup() return "Alliance" end
 local function Yards(m1, x1, y1, m2, x2, y2)
     local a, b = select(2, C_Map.GetWorldPosFromMapPos(m1, CreateVector2D(x1, y1))), select(2, C_Map.GetWorldPosFromMapPos(m2, CreateVector2D(x2, y2)))
     return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
@@ -96,7 +120,8 @@ end
 FarstriderLib_API = {
     FindTrail = function(m1, x1, y1, _, m2, x2, y2)
         trails = trails + 1
-        return {}, {}, { { cost = Yards(m1, x1, y1, m2, x2, y2) / 10 } }
+        local step = { loc = { mapId = m1, pos = { x = x1, y = y1 } }, loca = "Talk to the Flightmaster to travel to Testville" }
+        return { step }, {}, { { cost = flyInZone or Yards(m1, x1, y1, m2, x2, y2) / 30, locaId = 1001 } }
     end,
     FindTrailTo = function(map, x, y)
         trailsTo = trailsTo + 1
@@ -702,12 +727,12 @@ do
         -- the same walk as the junction-to-junction data alone gives it: through the cliffs
         local a = ns.Areas[4992]
         local tx, ty = HYJAL(a[2] / 100, a[3] / 100)
-        local shapes, approach = ns.Shapes, ns.Approach
-        ns.Shapes, ns.Approach = nil, nil
+        local shapes, approach, bends = ns.Shapes, ns.Approach, ns.Bends
+        ns.Shapes, ns.Approach, ns.Bends = nil, nil, nil
         local _, _, points = Nav.From(1, px, py).Path(tx, ty)
-        ns.Shapes, ns.Approach = shapes, approach
+        ns.Shapes, ns.Approach, ns.Bends = shapes, approach, bends
         local bad, total = Blocked(points, px, py, tx, ty)
-        Check(bad / total > 0.5, ("(without the roads' shapes %d%% of that walk is over blocked ground)"):format(bad / total * 100))
+        Check(bad / total > 0.25, ("(without the roads' courses %d%% of that walk is over blocked ground)"):format(bad / total * 100))
     end
 
     local g = R.Guide()
@@ -716,6 +741,16 @@ do
     Check(ExplorerArrow.dist:GetText():find("by road"), "arrow: " .. ExplorerArrow.dist:GetText())
 
     -- A flight inside the zone: taken for a long walk when it's clearly quicker, not otherwise.
+    -- Two flight masters the character knows: one by the player, one by the stop.
+    do
+        local stop = R.Guide().stop
+        local sx, sy = HYJAL(stop.x / 100, stop.y / 100)
+        FarstriderLibData.TaxiNodes[9001] = { 1, px + 30, py, 0, 3, "Here" }
+        FarstriderLibData.TaxiNodes[9002] = { 1, sx + 30, sy, 0, 3, "There" }
+        FarstriderLibData_CharacterSettings.knownTaxiNodes = { [9001] = true, [9002] = true }
+    end
+    R.Replan()
+    Pump()
     flyInZone = 30
     now = now + 10
     R.Tick()
@@ -725,6 +760,8 @@ do
     Check(g.leg ~= nil and ExplorerArrow.title:GetText() == "Talk to the Flightmaster to travel to Testville",
         "a long walk inside the zone: the arrow sends you to the flight master when the flight is much quicker")
     flyInZone = 100000
+    R.Replan()
+    Pump()
     now = now + 10
     R.Tick()
     Pump()
@@ -784,6 +821,105 @@ do
     FireEvent("ZONE_CHANGED")
     FlushTimers()
     Check(toast:IsShown() and toast.sub:GetText() == "Zone 1416 fully explored", "last area: popup says the zone is fully explored")
+end
+
+-- A trip is weighed by the walk from where it lands, not the bird's distance. Reported: for
+-- Highperch in Thousand Needles the arrow said to fly to Marshal's Refuge in Un'Goro Crater,
+-- which is near on the map and a crater wall away on foot.
+do
+    local R, Nav = ns.Route, ns.Nav
+    local nodes, id = FarstriderLibData.TaxiNodes, {}
+    for nodeID, n in pairs(nodes) do
+        if n[6] == "Marshal's Refuge, Un'Goro Crater" then id.refuge = nodeID end
+        if n[6] == "Thalanaar, Feralas" then id.thalanaar = nodeID end
+        if n[6] == "Gadgetzan, Tanaris" and n[5] == 1 then id.gadgetzan = nodeID end
+    end
+    local stop = ns.AreaByOverlay(689)
+    Check(stop and stop.name == "Highperch" and id.refuge and id.thalanaar and id.gadgetzan, "the reported stop and its flight masters are in the data")
+    local hx, hy = OnReal(1441, stop.x / 100, stop.y / 100)
+    local function WalkFrom(nodeID)
+        local n = nodes[nodeID]
+        local yards = Nav.From(1, n[2], n[3], Nav.TaxiApproach(1, nodeID)).Walk(hx, hy, Nav.Approach(1, 689))
+        return yards, math.sqrt((n[2] - hx) ^ 2 + (n[3] - hy) ^ 2)
+    end
+    local refuge, refugeBird = WalkFrom(id.refuge)
+    local gadget = WalkFrom(id.gadgetzan)
+    Check(not refuge or refuge > refugeBird * 4, ("Marshal's Refuge is %d yd from Highperch as the bird flies, and on foot: %s"):format(
+        refugeBird, refuge and (math.floor(refuge) .. " yd") or "no way"))
+    -- standing at Gadgetzan's flight master, knowing Gadgetzan and Marshal's Refuge
+    local g = nodes[id.gadgetzan]
+    local gx, gy = FromReal(1446, g[2], g[3])
+    FarstriderLibData_CharacterSettings.knownTaxiNodes = { [id.gadgetzan] = true, [id.refuge] = true }
+    R.Replan()
+    local leg, trip = R.FindTrip(stop, 1446, gx, gy)
+    Check(leg == nil and trip == nil and gadget ~= nil, ("knowing only Gadgetzan and Marshal's Refuge: walk the %d yd, no flight into the crater"):format(gadget or 0))
+    -- and knowing Thalanaar as well, which is by Highperch on foot
+    FarstriderLibData_CharacterSettings.knownTaxiNodes[id.thalanaar] = true
+    R.Replan()
+    leg, trip = R.FindTrip(stop, 1446, gx, gy)
+    Check(leg ~= nil and trip and trip.arr.name == "Thalanaar, Feralas" and trip.dep.name == "Gadgetzan, Tanaris",
+        "knowing Thalanaar too: fly there, " .. (trip and trip.arr and trip.arr.name or "?"))
+    FarstriderLibData_CharacterSettings.knownTaxiNodes = {}
+    R.Replan()
+end
+
+-- Reading progress. An area's state is the challenge's tick where the challenge reports it,
+-- and the character's own map where it doesn't; a zone with neither is unknown, never done.
+do
+    local silithus = ZoneOf(856)
+    local function Zone()
+        FireEvent("ACHIEVEMENT_EARNED")
+        for _, z in ipairs(ns.Progress()) do
+            if z.id == 856 then return z end
+        end
+    end
+    local z = Zone()
+    Check(z.known and z.total == 6 and z.done == 0 and z.areas[1].source == "challenge", "Silithus: six areas, read from the challenge")
+
+    -- the challenge lists nothing for the zone, and the game has no map record either
+    local real = GetAchievementNumCriteria
+    GetAchievementNumCriteria = function(id) if id == 856 then return 0 end return real(id) end
+    z = Zone()
+    Check(not z.known and z.total == 0 and z.done == 0, "a zone the game says nothing about is unknown, not fully explored")
+    SlashCmdList.EXPLORER("")
+    ExplorerFrame:Hide()
+
+    -- the same, with the character's map to go by: two of its pieces are revealed
+    local pieces = {}
+    for i = 3, #silithus do
+        local a = ns.Areas[silithus[i]]
+        if a[6] ~= "" then pieces[#pieces + 1] = a[6] end
+    end
+    Check(#pieces == 5, "five of Silithus's six areas have a piece on the map in use (Cenarion Hold has none)")
+    local function Piece(key)
+        local w, h, x, y = key:match("(%d+):(%d+):(%d+):(%d+)")
+        return { textureWidth = tonumber(w), textureHeight = tonumber(h), offsetX = tonumber(x), offsetY = tonumber(y) }
+    end
+    C_MapExplorationInfo = { GetExploredMapTextures = function(map)
+        if map == 1451 then return { Piece(pieces[1]), Piece(pieces[2]) } end
+        return {}
+    end }
+    z = Zone()
+    Check(z.known and z.total == 5 and z.done == 2 and z.unread == 1 and z.areas[1].source == "map",
+        ("no criteria from the challenge: the character's map is read instead (%d/%d, %s unread)"):format(z.done, z.total, tostring(z.unread)))
+    viewed = 1451
+    player.map = 1451
+    Tick()
+    Check(Pins() == 3, "and its three unrevealed areas get pins")
+
+    -- the challenge back: its ticks count, the map's record is kept for the report
+    GetAchievementNumCriteria = real
+    doneSet[silithus[3]] = true
+    z = Zone()
+    local first
+    for _, a in ipairs(z.areas) do if a.overlay == silithus[3] then first = a end end
+    Check(z.total == 6 and z.done == 1 and first.done and first.source == "challenge", "with criteria the challenge's ticks are what counts")
+    PRINTED = {}
+    SlashCmdList.EXPLORER("check")
+    Check(Printed("challenge 856: 1/6 explored") and Printed("lists 6 criteria; 6 matched") and Printed("revealed on your map"),
+        "/ep check reports what the game says, area by area")
+    C_MapExplorationInfo = nil
+    player.map, viewed = 1416, 1416
 end
 
 FAILS = fails

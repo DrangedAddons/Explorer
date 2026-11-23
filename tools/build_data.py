@@ -108,6 +108,7 @@ def main():
     overlays = {r["ID"]: r for r in load("WorldMapOverlay")}
     cats = {r["ID"]: r for r in load("Achievement_Category")}
     art_map = {r["UiMapArtID"]: int(r["UiMapID"]) for r in load("UiMapXMapArt")}
+    in_use = set(art_map)   # the art the maps draw now (art_map gains the old art's guesses further down)
     art_style = {r["ID"]: r["UiMapArtStyleID"] for r in load("UiMapArt")}
     style_size = {r["UiMapArtStyleID"]: (int(r["LayerWidth"]), int(r["LayerHeight"]))
                   for r in load("UiMapArtStyleLayer") if r["LayerIndex"] == "0"}
@@ -137,7 +138,7 @@ def main():
                     by_any.setdefault(a, o)
 
     def current(o):
-        if not o or o["UiMapArtID"] in art_map:
+        if not o or o["UiMapArtID"] in in_use:
             return o
         return by_areas.get(areas_of(o)) or by_first.get(o["AreaID_0"]) or by_any.get(o["AreaID_0"])
 
@@ -182,7 +183,12 @@ def main():
                     rebounded[ui_map] = rebounded.get(ui_map, 0) + 1
             x = min(98.0, max(2.0, x * 100))
             y = min(98.0, max(2.0, y * 100))
-            rows.append((int(asset), ui_map, round(x, 1), round(y, 1), k["Description_lang"]))
+            # The piece of the map that reveals when the area is explored, as the game names it in
+            # C_MapExplorationInfo.GetExploredMapTextures: its size and offset on the art in use.
+            piece = ""
+            if o["UiMapArtID"] in in_use and int(o["TextureWidth"]) > 0:
+                piece = "%s:%s:%s:%s" % (o["TextureWidth"], o["TextureHeight"], o["OffsetX"], o["OffsetY"])
+            rows.append((int(asset), ui_map, round(x, 1), round(y, 1), k["Description_lang"], int(o["AreaID_0"]), piece))
             if area_level.get(o["AreaID_0"], 0) > 0:
                 levels.append(area_level[o["AreaID_0"]])
         if not rows:
@@ -208,14 +214,18 @@ def main():
         "",
         "NS.DataBuild = %s" % lua_str(build),
         "",
-        "-- [map overlay ID] = { uiMapID, x, y, name }. x, y are map percent. The overlay ID is what",
+        "-- [map overlay ID] = { uiMapID, x, y, name, areaID, piece }. x, y are map percent. The overlay ID is what",
         "-- GetAchievementCriteriaInfo returns as an explore criterion's asset (the game's",
         "-- WorldMapOverlay table; position from the same area's overlay on the map art in use).",
+        "-- areaID names the area in the client's language (C_Map.GetAreaInfo). piece is the part of the map",
+        "-- that reveals when the area is explored, \"width:height:offsetX:offsetY\", as",
+        "-- C_MapExplorationInfo.GetExploredMapTextures lists it: the character's own record of the area,",
+        "-- for when the challenge says nothing about it. Empty where the art in use has no such piece.",
         "NS.Areas = {",
     ]
     for oid in sorted(areas):
-        _, ui_map, x, y, name = areas[oid]
-        out.append("  [%d] = {%d, %s, %s, %s}," % (oid, ui_map, x, y, lua_str(name)))
+        _, ui_map, x, y, name, area_id, piece = areas[oid]
+        out.append("  [%d] = {%d, %s, %s, %s, %d, %s}," % (oid, ui_map, x, y, lua_str(name), area_id, lua_str(piece)))
     out += [
         "}",
         "",

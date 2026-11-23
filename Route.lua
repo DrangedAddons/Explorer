@@ -10,8 +10,8 @@
 --           one, by FarstriderLib's travel time (flight paths you know, boats, zeppelins,
 --           the tram, on foot). Those lookups are spread over frames; the first zone's
 --           stops are ready at once.
---   guide   the next stop, and when it's in another zone the first thing to do to get
---           there ("Talk to the Flightmaster to travel to ..."), from FarstriderLib.
+--   guide   the next stop, and when a trip gets there quicker than walking, the first
+--           thing to do ("Talk to the Flightmaster to travel to ...").
 --
 -- Walks are measured by Nav.lua (terrain, walls and roads) where it has data: the order of
 -- the stops in the zone you're in, the way to the next stop, and walks between zones.
@@ -25,12 +25,14 @@ local SHORTLIST = 6         -- nearest zones on the continent whose travel time 
 local BUDGET_MS = 4         -- planning time per frame
 local WALK = 1.3 / 7        -- seconds a yard on foot, with FarstriderLib's detour factor
 local FAR = 3600            -- a cost for "no idea": another continent with no pathfinder
-local LEG_EVERY = 3         -- seconds between travel lookups for the same stop
 local ON_FOOT = 1000        -- FarstriderLib's kind of step for going on foot
 local UNREACHED = 1.5       -- no way found on foot: the bird's distance and half again
 local WAY_EVERY, WAY_MOVED = 5, 25   -- the walk to the next stop is found again after this many seconds or yards
-local FLY_FROM = 1200       -- yards of walking inside a zone from which a flight is weighed against it
+local FLY_FROM = 1200       -- yards of walking from which a trip by flight is weighed against it
 local FLY_BEATS = 0.8       -- ... and taken when it needs under this much of the walk's time
+local GATE_RANGE = 8000     -- flight masters this far from a place (as the bird flies) are looked at ...
+local GATE_LOOK = 8         -- ... the nearest this many, for the walk between them and the place
+local TRIP_EVERY = 10       -- seconds between looks at how to get to the next stop
 
 local Route = {}
 NS.Route = Route
@@ -154,61 +156,228 @@ function Route.TooHigh(zone)
     return zoneLevel ~= nil and type(level) == "number" and zoneLevel > level + LEVEL_MARGIN
 end
 
--- Walks from a zone's middle, kept by zone so one look at the roads serves every zone
--- weighed from it. { inst, wx, wy, nav } or false without walking data there.
-local walkers = {}
+---------------------------------------------------------
+--  SECTION: Getting from one place to another
+---------------------------------------------------------
+-- One rule for every journey, whether it's weighed for the order of the zones or shown by
+-- the arrow:
+--
+--   walk   all the way on foot, by terrain and roads (Nav.lua), when both ends are on one
+--          continent
+--   trip   on foot to a flight master the character knows, FarstriderLib's travel from there
+--          to another one (flights, and the boats, zeppelins and tram between continents),
+--          and on foot from where that lands
+--
+-- and the quicker of the two. Both walks of a trip are real walks. FarstriderLib on its own
+-- counts every walk as a straight line, which picks a flight master that is near as the bird
+-- flies and a mountain away on foot. So it is only asked for the part between two flight
+-- masters, where there is no walk for it to get wrong. Where the walking data doesn't reach
+-- (or the character knows no flight master near the end), its whole route is all there is.
+--
+-- A place is { map, x, y } (0-1 on a zone's map), with `pin` (an overlay ID) when it is an
+-- explore pin and `player` when it is where the player stands. What's found from a place is
+-- kept on it, so a zone's place is kept between plans.
 
-local function Walker(key, map, x, y)
-    local w = key and walkers[key]
-    if w == nil then
-        w = false
-        local inst, wx, wy = NS.WorldPos(map, x, y)
-        if inst and NS.Nav and NS.Nav.Knows(inst) then
-            w = { inst = inst, wx = wx, wy = wy, nav = NS.Nav.From(inst, wx, wy) }
+
+-- Yards a second on the ground at the player's level, as FarstriderLib counts it for Forever.
+local function RideSpeed()
+    local level = UnitLevel and UnitLevel("player") or 1
+    return level >= 60 and 14 or level >= 40 and 11.2 or 7
+end
+
+local continentMapOf = {}   -- [continent instance] = its uiMap, learned from the places seen
+local nodesOf = {}          -- [continent instance] = the flight masters the character knows there
+local flights = {}          -- ["from>to"] = { seconds, first step } between two flight masters, or false
+local places = {}           -- [zone's challenge ID] = the zone's place
+
+local function ForgetTravel()
+    nodesOf, flights, places = {}, {}, {}
+end
+
+-- Fills in where a place is in the world. True when the walking data knows its continent.
+local function Resolve(p)
+    if p.inst == nil then
+        local inst, wx, wy = NS.WorldPos(p.map, p.x, p.y)
+        p.inst, p.wx, p.wy = inst or false, wx, wy
+        if inst then
+            local c = Continent(p.map)
+            if c then continentMapOf[inst] = c end
         end
-        if key then walkers[key] = w end
     end
-    return w or nil
+    return p.inst ~= false and NS.Nav ~= nil and NS.Nav.Knows(p.inst)
 end
 
--- Yards on foot between two map points by terrain and roads, and as the bird flies.
--- nil without walking data, across continents, or with no way found.
-local function WalkYards(key, m1, x1, y1, m2, x2, y2)
-    local w = Walker(key, m1, x1, y1)
-    if not w then return nil end
-    local inst, tx, ty = NS.WorldPos(m2, x2, y2)
-    if inst ~= w.inst then return nil end
-    local yards = w.nav.Walk(tx, ty)
-    if not yards then return nil end
-    return yards, math.sqrt((tx - w.wx) ^ 2 + (ty - w.wy) ^ 2)
+-- The flight masters the character knows on a continent: { id, inst, x, y, name }. From
+-- FarstriderLib's data and its record of the flight maps the character has opened.
+local function KnownNodes(inst)
+    local list = nodesOf[inst]
+    if list then return list end
+    list = {}
+    local lib = FarstriderLibData   -- the copy of the library that's running sets this
+    local data = (type(lib) == "table" and lib.TaxiNodes) or (NS.FarstriderLibData and NS.FarstriderLibData.TaxiNodes)
+    local saved = FarstriderLibData_CharacterSettings
+    local known = type(saved) == "table" and saved.knownTaxiNodes
+    if type(data) == "table" and type(known) == "table" then
+        local faction = UnitFactionGroup and UnitFactionGroup("player")
+        local mask = faction == "Alliance" and 1 or faction == "Horde" and 2 or 0
+        for id, n in pairs(data) do
+            if known[id] == true and n[1] == inst and (n[5] == 3 or n[5] == mask) then
+                list[#list + 1] = { id = id, inst = inst, x = n[2], y = n[3], name = n[6] }
+            end
+        end
+    end
+    nodesOf[inst] = list
+    return list
 end
 
--- Seconds from one map point to another. FarstriderLib's route where it has one; a route of
--- its that is all on foot is a straight line with 30% added, so that one is scaled to the
--- walk the terrain and roads allow. `key` names the start when it's a zone's middle.
-local function TravelTime(key, m1, x1, y1, m2, x2, y2)
+-- A flight master on its continent's map, for asking FarstriderLib about it.
+local function NodeOnMap(n)
+    if not n.map then
+        local c = continentMapOf[n.inst]
+        local x, y
+        if c then x, y = NS.MapPos(c, n.inst, n.x, n.y) end
+        if x then n.map, n.mx, n.my = c, x, y end
+    end
+    return n.map
+end
+
+-- The ways onto the roads from a place: a pin's are worked out ahead; the player's are
+-- searched for over the ground when no straight line gets them to a junction.
+local function Onto(p, pause)
+    if p.onto == nil then
+        p.onto = false
+        if p.pin then
+            p.onto = NS.Nav.Approach(p.inst, p.pin) or false
+        elseif p.player and not NS.Nav.OnRoads(p.inst, p.wx, p.wy) then
+            local ways = NS.Nav.Reach(p.inst, p.wx, p.wy, pause)
+            if #ways > 0 then p.onto = ways end
+        end
+    end
+    return p.onto or nil
+end
+
+local function Walker(p, pause)
+    if not p.nav then p.nav = NS.Nav.From(p.inst, p.wx, p.wy, Onto(p, pause)) end
+    return p.nav
+end
+
+-- The known flight masters nearest a place by the walk: { { node, yards }, ... }.
+local function Gates(p, pause)
+    if p.gates then return p.gates end
+    local near = {}
+    for _, n in ipairs(KnownNodes(p.inst)) do
+        local bird = math.sqrt((n.x - p.wx) ^ 2 + (n.y - p.wy) ^ 2)
+        if bird <= GATE_RANGE then near[#near + 1] = { node = n, bird = bird } end
+    end
+    table.sort(near, function(a, b) return a.bird < b.bird end)
+    local nav, list = Walker(p, pause), {}
+    for i = 1, math.min(GATE_LOOK, #near) do
+        local n = near[i].node
+        local yards = nav.Walk(n.x, n.y, NS.Nav.TaxiApproach(p.inst, n.id))
+        if yards then list[#list + 1] = { node = n, yards = yards } end
+    end
+    table.sort(list, function(a, b) return a.yards < b.yards end)
+    p.gates = list
+    return list
+end
+
+-- Seconds and steps of a FarstriderLib route, and whether any of it is a ride (not on foot).
+local function Trail(steps, edges)
+    if type(edges) ~= "table" or #edges == 0 then return nil end
+    local cost, rides = 0, false
+    for _, e in ipairs(edges) do
+        cost = cost + (tonumber(e.cost) or 0)
+        if e.locaId ~= ON_FOOT then rides = true end
+    end
+    if not (cost > 0 and cost < math.huge) then return nil end
+    return cost, rides, type(steps) == "table" and steps[1] or nil
+end
+
+-- FarstriderLib's travel between two flight masters: seconds and its first step. nil when
+-- it has nothing to ride between them.
+local function Flight(a, b)
+    local key = a.id .. ">" .. b.id
+    local f = flights[key]
+    if f == nil then
+        f = false
+        local api = FarstriderLib_API
+        if type(api) == "table" and api.FindTrail and NodeOnMap(a) and NodeOnMap(b) then
+            local ok, steps, _, edges = pcall(api.FindTrail, a.map, a.mx, a.my, 0, b.map, b.mx, b.my, 0)
+            if ok then
+                local seconds, rides, step = Trail(steps, edges)
+                if seconds and rides then f = { seconds, step } end
+            end
+        end
+        flights[key] = f
+    end
+    if f then return f[1], f[2] end
+end
+
+-- FarstriderLib's whole route between two places, walks as straight lines and all: for
+-- where the walking data doesn't reach.
+local function Whole(from, to)
     local api = FarstriderLib_API
     if type(api) == "table" and api.FindTrail then
-        local ok, _, _, edges = pcall(api.FindTrail, m1, x1, y1, 0, m2, x2, y2, 0)
-        if ok and type(edges) == "table" and #edges > 0 then
-            local cost, onFoot = 0, true
-            for _, e in ipairs(edges) do
-                cost = cost + (tonumber(e.cost) or 0)
-                if e.locaId ~= ON_FOOT then onFoot = false end
-            end
-            if cost > 0 and cost < math.huge then
-                if onFoot then
-                    local yards, bird = WalkYards(key, m1, x1, y1, m2, x2, y2)
-                    if yards and bird > 1 then cost = cost * yards / (bird * 1.3) end
+        local ok, steps, _, edges = pcall(api.FindTrail, from.map, from.x, from.y, 0, to.map, to.x, to.y, 0)
+        if ok then
+            local seconds = Trail(steps, edges)
+            if seconds then return seconds end
+        end
+    end
+    local yards = NS.Between(from.map, from.x, from.y, to.map, to.x, to.y)
+    return yards and yards * WALK or FAR
+end
+
+-- From one place to another: seconds, the trip when a trip is the way ({ dep, arr, step,
+-- seconds }; dep is nil when FarstriderLib picks where to leave from), and the walk's
+-- seconds when there is a walk. `tries` is how many flight masters are weighed at each end.
+local function Travel(from, to, tries, pause)
+    local navFrom, navTo = Resolve(from), Resolve(to)
+    local speed = RideSpeed()
+    local walk
+    if navFrom and navTo and from.inst == to.inst then
+        local yards = Walker(from, pause).Walk(to.wx, to.wy, Onto(to, pause))
+        if yards then walk = yards / speed end
+    end
+    local best, trip = walk, nil
+    if navTo and (not walk or walk * speed > FLY_FROM) then
+        local limit = walk and walk * FLY_BEATS or math.huge
+        local arrivals = Gates(to, pause)
+        local departures = navFrom and Gates(from, pause) or nil
+        for i = 1, math.min(tries, #arrivals) do
+            local a = arrivals[i]
+            if departures then
+                for j = 1, math.min(tries, #departures) do
+                    local d = departures[j]
+                    if d.node.id ~= a.node.id then
+                        if pause then pause() end
+                        local seconds, step = Flight(d.node, a.node)
+                        local t = seconds and d.yards / speed + seconds + a.yards / speed
+                        if t and t < limit then
+                            limit, best = t, t
+                            trip = { dep = d.node, arr = a.node, step = step, seconds = t }
+                        end
+                    end
                 end
-                return cost
+            elseif from.player then
+                -- no walking data where the player stands: FarstriderLib from there to the flight master
+                local api = FarstriderLib_API
+                if type(api) == "table" and api.FindTrailTo and NodeOnMap(a.node) then
+                    if pause then pause() end
+                    local ok, steps, _, edges = pcall(api.FindTrailTo, a.node.map, a.node.mx, a.node.my, 0)
+                    local seconds, rides, step
+                    if ok then seconds, rides, step = Trail(steps, edges) end
+                    local t = seconds and rides and seconds + a.yards / speed
+                    if t and t < limit then
+                        limit, best = t, t
+                        trip = { arr = a.node, step = step, seconds = t }
+                    end
+                end
             end
         end
     end
-    local yards = WalkYards(key, m1, x1, y1, m2, x2, y2)
-    if yards then return yards / 7 end
-    yards = NS.Between(m1, x1, y1, m2, x2, y2)
-    return yards and yards * WALK or FAR
+    if best then return best, trip, walk end
+    return Whole(from, to), nil, nil
 end
 
 ---------------------------------------------------------
@@ -295,6 +464,7 @@ end
 local plan, builder
 local refiner        -- a coroutine putting the zone you're in into walking order
 local wayfinder      -- a coroutine finding the walk from the player to the next stop
+local tripfinder     -- a coroutine weighing how to get to the next stop: on foot, or a trip
 local stale = true
 local version = 0
 local times = {}     -- ["from>to"] = seconds between two zones' middles
@@ -346,8 +516,16 @@ local function Build(p)
                     or (db.routeScope == "continent" and here and Continent(map) == here)
                 if ok and not inZone and Route.TooHigh(zone) then ok = false end
                 if ok then
-                    local _, cx, cy = Centre(left)
-                    cands[#cands + 1] = { zone = zone, left = left, map = map, cx = cx, cy = cy, inZone = inZone }
+                    -- the zone stands at the pin nearest the middle of what's left: a pin has a
+                    -- worked-out way onto the roads, a point in the middle may be on a mountain
+                    local _, mx, my = Centre(left)
+                    local mid, at, near = { x = mx * 100, y = my * 100 }, left[1], nil
+                    for _, a in ipairs(left) do
+                        local d = Gap(mid, a)
+                        if not near or d < near then at, near = a, d end
+                    end
+                    cands[#cands + 1] = { zone = zone, left = left, map = map, cx = at.x / 100, cy = at.y / 100,
+                        pin = at.overlay, inZone = inZone }
                 end
             end
         end
@@ -355,6 +533,15 @@ local function Build(p)
 
     local from                           -- the zone the route stands in
     local curMap, curX, curY = pm, px, py
+    local me = { map = pm, x = px, y = py, player = true }
+    local function Place(c)
+        local place = places[c.zone.id]
+        if not place or place.pin ~= c.pin then
+            place = { map = c.map, x = c.cx, y = c.cy, pin = c.pin }
+            places[c.zone.id] = place
+        end
+        return place
+    end
     local function Add(c, sx, sy, rough)
         local path = OrderStops(c.left, sx, sy)
         local stops = {}
@@ -380,10 +567,10 @@ local function Build(p)
             if not t then
                 coroutine.yield()
                 if from then
-                    t = TravelTime(from.zone.id, from.map, from.cx, from.cy, c.map, c.cx, c.cy)
+                    t = Travel(Place(from), Place(c), 2, coroutine.yield)
                     times[key] = t
                 else
-                    t = TravelTime(nil, curMap, curX, curY, c.map, c.cx, c.cy)
+                    t = Travel(me, Place(c), 2, coroutine.yield)
                 end
             end
             if not bestTime or t < bestTime then best, bestTime = c, t end
@@ -467,10 +654,13 @@ local function Refine(e)
 end
 
 local function Step()
-    if not builder and not refiner and not wayfinder then return end
+    if not builder and not refiner and not wayfinder and not tripfinder then return end
     local started = debugprofilestop and debugprofilestop() or 0
     repeat
-        if wayfinder then
+        if tripfinder then
+            local ok = coroutine.resume(tripfinder)
+            if not ok or coroutine.status(tripfinder) == "dead" then tripfinder = nil end
+        elseif wayfinder then
             local ok = coroutine.resume(wayfinder)
             if not ok or coroutine.status(wayfinder) == "dead" then wayfinder = nil end
         elseif refiner then
@@ -545,32 +735,43 @@ end
 --  SECTION: The guide
 ---------------------------------------------------------
 local guide
-local legAt = 0
 
--- Yards a second on the ground at the player's level, as FarstriderLib counts it for Forever.
-local function RideSpeed()
-    local level = UnitLevel and UnitLevel("player") or 1
-    return level >= 60 and 14 or level >= 40 and 11.2 or 7
-end
 
--- The first thing to do on a trip to a stop: { map, x, y, text }, or nil when it's a walk.
--- `walkSeconds`: only take a trip that beats this walk clearly (a flight inside one zone).
-local function Leg(stop, walkSeconds)
-    local api = FarstriderLib_API
-    if type(api) ~= "table" or not api.FindTrailTo then return nil end
-    local ok, steps, _, edges = pcall(api.FindTrailTo, stop.map, stop.x / 100, stop.y / 100, 0)
-    if not ok or type(steps) ~= "table" or #steps < 2 then return nil end
-    if walkSeconds then
-        local cost = 0
-        for _, e in ipairs(type(edges) == "table" and edges or {}) do cost = cost + (tonumber(e.cost) or 0) end
-        if not (cost > 0 and cost < walkSeconds * FLY_BEATS) then return nil end
-    end
-    local s = steps[1]
-    local loc = type(s) == "table" and s.loc
+-- A FarstriderLib step as the arrow's leg: { map, x, y, text }.
+local function StepLeg(step)
+    local loc = type(step) == "table" and step.loc
     local pos = type(loc) == "table" and loc.pos
     if not (pos and type(loc.mapId) == "number" and type(pos.x) == "number" and type(pos.y) == "number") then return nil end
     if pos.x < -0.5 or pos.x > 1.5 or pos.y < -0.5 or pos.y > 1.5 then return nil end   -- not a map position
-    return { map = loc.mapId, x = pos.x, y = pos.y, text = type(s.loca) == "string" and s.loca or "Travel on" }
+    return { map = loc.mapId, x = pos.x, y = pos.y, text = type(step.loca) == "string" and step.loca or "Travel on" }
+end
+
+-- FarstriderLib's own first step from where the player stands to a stop, or nil when it
+-- would walk. Only for where the walking data has nothing to weigh.
+local function Leg(stop)
+    local api = FarstriderLib_API
+    if type(api) ~= "table" or not api.FindTrailTo then return nil end
+    local ok, steps = pcall(api.FindTrailTo, stop.map, stop.x / 100, stop.y / 100, 0)
+    if not ok or type(steps) ~= "table" or #steps < 2 then return nil end
+    return StepLeg(steps[1])
+end
+
+-- How to get to a stop from where the player stands: the first leg of a trip
+-- ({ map, x, y, text }) and the trip, or nil to walk.
+function Route.FindTrip(stop, pm, px, py, pause)
+    local from = { map = pm, x = px, y = py, player = true }
+    local to = { map = stop.map, x = stop.x / 100, y = stop.y / 100, pin = stop.overlay }
+    local _, trip, walk = Travel(from, to, 3, pause)
+    if trip then
+        local leg = StepLeg(trip.step)
+        if not leg and trip.dep and NodeOnMap(trip.dep) then
+            leg = { map = trip.dep.map, x = trip.dep.mx, y = trip.dep.my,
+                text = ("Fly from %s to %s"):format(trip.dep.name, trip.arr.name) }
+        end
+        return leg, trip
+    end
+    if not walk and pm ~= stop.map then return Leg(stop) end
+    return nil
 end
 
 -- The walk from the player to the stop (or to the first leg of the trip): g.way, with the
@@ -623,7 +824,7 @@ local function UpdateGuide(pm, px, py, onTaxi)
     local g = guide
     if not g or g.overlay ~= stop.overlay then
         g = { overlay = stop.overlay }
-        guide, legAt = g, 0
+        guide = g
     end
     g.stop, g.entry = stop, e
     if not pm then return end
@@ -631,23 +832,18 @@ local function UpdateGuide(pm, px, py, onTaxi)
         g.flew = g.flew or onTaxi
         return
     end
-    if g.flew then g.flew, g.leg, g.legFrom = nil, nil, nil end   -- landed: look again from here
-    -- A trip (flight, boat, tram) for a stop in another zone. In the same zone only for a long
-    -- walk, and only when the flight beats walking clearly.
-    local walkSeconds
-    if pm == stop.map then
-        local bird = NS.Between(pm, px, py, stop.map, stop.x / 100, stop.y / 100)
-        local yards = bird and bird * (g.walkRatio or 1.3)
-        if yards and yards > FLY_FROM then walkSeconds = yards / RideSpeed() end
-    end
-    if pm ~= stop.map or walkSeconds then
-        local now = GetTime()
-        if g.legFrom ~= pm or now - legAt >= LEG_EVERY then
-            legAt, g.legFrom = now, pm
-            g.leg = Leg(stop, walkSeconds)
-        end
-    else
-        g.leg, g.legFrom = nil, nil
+    if g.flew then g.flew, g.leg, g.tripAt = nil, nil, nil end   -- landed: look again from here
+    -- How to get there is weighed again every so often and on entering another zone, by a
+    -- coroutine (it may search the ground and ask FarstriderLib several times).
+    local now = GetTime()
+    if not tripfinder and (g.tripFrom ~= pm or not g.tripAt or now - g.tripAt >= TRIP_EVERY) then
+        g.tripFrom, g.tripAt = pm, now
+        tripfinder = coroutine.create(function()
+            local leg = Route.FindTrip(stop, pm, px, py, coroutine.yield)
+            if guide == g then g.leg = leg end
+        end)
+        local ok = coroutine.resume(tripfinder)
+        if not ok or coroutine.status(tripfinder) == "dead" then tripfinder = nil end
     end
     UpdateWay(g, pm, px, py)
 end
@@ -760,7 +956,8 @@ end
 
 -- Plan again from where you stand; skipped stops come back.
 function Route.Replan()
-    skipped, times, walkers, stale, guide = {}, {}, {}, true, nil
+    skipped, times, stale, guide = {}, {}, true, nil
+    ForgetTravel()
     Tick()
 end
 
@@ -770,20 +967,21 @@ frame:RegisterEvent("PLAYER_LEVEL_UP")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LEVEL_UP" then
-        times, walkers, stale = {}, {}, true    -- a faster mount changes the travel times, and more zones are in reach
+        ForgetTravel()
+        times, stale = {}, true    -- a faster mount changes the travel times, and more zones are in reach
     else
         lastMap = nil
         -- FarstriderLib rebuilds its graph when a flight master's map teaches it new flight paths
         local api = FarstriderLib_API
         if not Route.hooked and type(api) == "table" and api.RegisterRebuildCallback then
-            Route.hooked = pcall(api.RegisterRebuildCallback, function() times = {} end)   -- walks don't change with it
+            Route.hooked = pcall(api.RegisterRebuildCallback, function() times = {}; ForgetTravel() end)
         end
     end
 end)
 frame:SetScript("OnUpdate", function(_, elapsed)
-    if (builder or refiner or wayfinder) and not InCombatLockdown() then
+    if (builder or refiner or wayfinder or tripfinder) and not InCombatLockdown() then
         local ok = pcall(Step)
-        if not ok then builder, refiner, wayfinder = nil, nil, nil end
+        if not ok then builder, refiner, wayfinder, tripfinder = nil, nil, nil, nil end
     end
     since = since + elapsed
     if since < 1 then return end

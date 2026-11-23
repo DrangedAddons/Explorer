@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.0
+
+Two reports from players, and what was behind them.
+
+**"It told me to fly to Un'Goro to get to Thousand Needles."**
+
+- Flights were picked by straight-line distance from where they land. Marshal's Refuge is 1,150 yards from Highperch as the bird flies and over 10,000 on foot, round the crater wall. Now there is one rule for every journey: the walk to a flight master you know, the flight, and the walk from where it lands, against walking all the way. Both walks are real walks over the ground. The same rule orders the zones.
+- Every flight master has its way onto the roads worked out, as every pin has.
+- The walking data is now built from AzerothGPS's full data (1.3.14): its roads with the course each one takes, its bridges and its caves and tunnels. Before, Explorer had only which junctions a road joins, worked the courses out itself, and joined the network's separate pieces by crossing blocked ground where it was thinnest. One of those joins went over the wall of Un'Goro Crater. Now a bridge's floor and a tunnel's floor are open ground, roads are only ever joined over open ground, and a road that stops and carries on across a short gap (Thandol Span) is joined straight.
+
+**"It said Silithus was completely discovered, and it wasn't."**
+
+- A zone the game gave no usable challenge data for could show as done. It now shows as unknown.
+- Progress has a second source. Each area takes the challenge's tick where the challenge reports it, and the character's own map (what's revealed on it) where it doesn't.
+- Areas are matched to the challenge by ID, then by name in your client's language, so a non-English client no longer depends on the order the game lists them in.
+- `/ep check` prints what the game reports for the zone you're in (or the zone whose map is open), area by area, and where the challenge and your map disagree. If a zone ever reads wrong, that output says why.
+- An "explored" popup or chat line only fires for the zone you're in.
+- Four pins moved to where the current map has them (Gnomeregan side of Dun Morogh, Tirisfal, Moonglade).
+
 ## 0.8.1
 
 The walking data was checked zone by zone (every walk between two pins of a zone, 3,806 of them) and fixed where it came up short.

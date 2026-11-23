@@ -1,27 +1,32 @@
-"""Builds Nav/Shapes.lua from Nav/Terrain.lua and Nav/Roads.lua: the ground between the points.
+"""Builds Nav/Shapes.lua from Nav/Terrain.lua and Nav/Roads.lua: what joins the roads up.
 
 Usage: python -I tools/shape_nav.py        (tools/build_nav_data.py runs it after a rebuild)
+       python -I tools/shape_nav.py --taxi   only the flight masters, into the Shapes.lua that's there
 
-AzerothGPS's roads are junctions and the length of road between each two. On a winding
-mountain road a straight line between two junctions goes through the mountain. This works
-out where each such road runs, by finding the way over open ground on the terrain grid, and
-does the same for every explore pin: the walk from the pin to the road junctions nearest it.
+AzerothGPS's road network comes in dozens of unconnected pieces, and its roads only meet at
+junctions; it has an off-road router of its own for the rest. This does that part ahead of time,
+over the ground in Nav/Terrain.lua (AzerothGPS's grid with its bridges and tunnels laid in), and
+does the same for every explore pin and flight master: the walk from it to the junctions nearest.
+
+Every search here is over open ground. The one exception is a pin (or flight master) that itself
+stands on ground the grid has blocked, or in a pocket the grid closes off: it has to get out
+somehow, so it crosses as little blocked ground as will do. Roads are never joined that way: a
+join across blocked ground was tried, and put a road over the wall of Un'Goro Crater.
 
 Output (world yards, x north, y west):
-  VP.Shapes[cont][a * 65536 + b] = { x1, y1, ... }     the points between junctions a < b, in
-                                                       order from a, for roads whose straight
-                                                       line is blocked
-  VP.Links[cont] = { a, b, yards, ... }                extra roads. AzerothGPS's network comes in pieces
-                                                       and its roads only meet at junctions (it has an
-                                                       off-road router of its own for the rest). Two kinds:
-                                                       a walk over open ground between junctions that are
-                                                       near each other but far apart by road, and for each
-                                                       piece a walk to the nearest junction of the rest.
-                                                       Bends in Shapes.
+  VP.Links[cont] = { a, b, yards, ... }                extra roads between junctions: a walk over open
+                                                       ground between two that are near each other but far
+                                                       apart by road, and for each piece of the network a
+                                                       walk to the nearest junction of the rest
+  VP.Shapes[cont][a * 65536 + b] = { x1, y1, ... }     the points along such a walk between a < b, from a
   VP.Approach[overlayID] = { cont, { junction, yards, { x1, y1, ... } }, ... }
                                                        from an explore pin (Data.lua) to up to
                                                        two junctions: the walk, and the points
                                                        on the way from the pin
+  VP.Taxi[nodeID] = { cont, { junction, yards, { x1, y1, ... } }, ... }
+                                                       the same for every flight master (FarstriderLib's
+                                                       TaxiNodes): a flight is only worth taking for the
+                                                       walk from where it lands
   VP.Hops[a * 65536 + b] = { yards, x1, y1, ... }      between two pins near each other (overlay IDs
                                                        a < b, points from a) whose straight line is
                                                        blocked: a walk round over the ground, where
@@ -56,10 +61,13 @@ LOCAL_YARDS = 450      # junctions this close over open ground get a walk betwee
 LOCAL_RATIO = 2.5      # ... when the roads take this many times longer to get there
 LOCAL_WANT = 10        # ... looking at the nearest this many
 LOCAL_CAP = 15000      # cells that search may open
+CARRY_YARDS = 300      # two dead ends this close, in different pieces, are one road that carries on when ...
+CARRY_AIM = 50         # ... each road points at the other end to within this many degrees
+CARRY_BLOCKED = 0.3    # ... and no more than this much of the line between them is blocked ground
 LINK_CAP = 150000      # cells the search that joins a piece of the road network may open
 LINK_CAP_EACH = 1200   # ... plus this many for each of the piece's junctions (it spreads out from all of them)
-LINK_YARDS = 1500      # ... and how far it looks
-LINK_THROUGH = 500     # ... and how many yards of blocked ground (a tunnel, a bridge) it may cross
+LINK_YARDS = 4000      # ... and how far it looks
+LINK_THROUGH = 0       # (blocked ground it may cross: none, see where the pieces are joined)
 STEEP = 15             # a step onto blocked ground costs this many, when a search may cross it at all
 REACH_WANT = 2
 NUDGE = 20             # cells a point on blocked ground may move to reach open ground
@@ -284,6 +292,16 @@ def read_nav():
     return stamp, grounds, roads
 
 
+def read_bends():
+    """{ cont: { a * 65536 + b: [x1, y1, ...] } }: the points along each road, from Nav/Roads.lua."""
+    text = open(os.path.join(NAV, "Roads.lua"), encoding="utf-8").read()
+    out = {}
+    if "VP.Bends = " in text:
+        for cont, body in B.top_entries(B.table_after(text, "VP.Bends = ")):
+            out[cont] = {int(m.group(1)): B.numbers(m.group(2)) for m in re.finditer(r"\[(\d+)\]=\{([^{}]*)\}", body)}
+    return out
+
+
 def pins():
     """Every explore pin in the world: overlay -> (continent, x, y), from Data.lua and the maps' bounds."""
     bounds = {}
@@ -307,21 +325,101 @@ def fmt_points(points):
     return ",".join(B.fmt(v) for p in points for v in p)
 
 
+def taxi_nodes():
+    """FarstriderLib's flight masters: nodeID -> (continent, x, y)."""
+    path = os.path.join(ROOT, "Libs", "FarstriderLibData", "Taxi", "Camelot", "FarstriderLibData_Taxi.lua")
+    text = open(path, encoding="utf-8").read()
+    text = text[text.index("TaxiNodes"):]
+    text = text[:text.index("\n}")]
+    out = {}
+    for m in re.finditer(r"\[(\d+)\] = \{ (\d+), (-?[\d.]+), (-?[\d.]+),", text):
+        out[int(m.group(1))] = (int(m.group(2)), float(m.group(3)), float(m.group(4)))
+    return out
+
+
+def ways_onto_roads(gr, xs, ys, at, true_at, x, y):
+    """From a point to the junctions nearest it over the ground: ([(junction, yards, points)], crossed blocked ground)."""
+    cell = gr.g.to_cell(x, y)
+    found, through = [], False
+    if gr.at(*cell) != 2:
+        found = gr.reach(cell, at, REACH_WANT, REACH_CAP, REACH_YARDS / gr.g.cell)
+    if not found:
+        through = True
+        found = gr.reach(cell, true_at, REACH_WANT, REACH_CAP, (REACH_YARDS + STEEP * REACH_THROUGH) / gr.g.cell, through=True)
+    ways = []
+    for c, _, way in found:
+        j = (true_at if through else at)[c]
+        points = gr.pull((x, y), way, (xs[j - 1], ys[j - 1]))
+        line = [(x, y)] + points + [(xs[j - 1], ys[j - 1])]
+        ways.append((j, sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(line, line[1:])), points))
+    return ways, through
+
+
+def taxi_block(grounds, roads, junction_cells, true_cells):
+    out = ["\n-- [nodeID] = { cont, { junction, yards, { the points on the way from the flight master } }, ... }\n",
+           "VP.Taxi = {\n"]
+    started, done, none, crossed = time.time(), 0, 0, 0
+    for node, (cont, x, y) in sorted(taxi_nodes().items()):
+        gr, at = grounds.get(cont), junction_cells.get(cont)
+        if not gr or not at:
+            continue
+        xs, ys, _ = roads[cont]
+        ways, through = ways_onto_roads(gr, xs, ys, at, true_cells[cont], x, y)
+        if not ways:
+            none += 1
+            continue
+        crossed += 1 if through else 0
+        out.append("  [%d]={%d,%s},\n" % (node, cont, ",".join(
+            "{%d,%s,{%s}}" % (j, B.fmt(yards), fmt_points(points)) for j, yards, points in ways)))
+        done += 1
+    out.append("}\n")
+    print("flight masters: %d joined to the roads (%d of them across ground the grid has blocked), %d with no junction in reach (%.0fs)" % (
+        done, crossed, none, time.time() - started), flush=True)
+    return out
+
+
+def taxi_only():
+    """Rewrites just VP.Taxi in an existing Nav/Shapes.lua (the rest takes ten minutes)."""
+    stamp, grounds, roads = read_nav()
+    junction_cells, true_cells = {}, {}
+    for cont, (xs, ys, edges) in roads.items():
+        gr = grounds.get(cont)
+        if not gr:
+            continue
+        at, true_at = {}, {}
+        for i in range(len(xs)):
+            rc = gr.open_near(*gr.g.to_cell(xs[i], ys[i]))
+            if rc:
+                at.setdefault(rc, i + 1)
+            true_at.setdefault(gr.g.to_cell(xs[i], ys[i]), i + 1)
+        junction_cells[cont], true_cells[cont] = at, true_at
+    path = os.path.join(NAV, "Shapes.lua")
+    text = open(path, encoding="utf-8").read()
+    marker = "\n-- [nodeID] = { cont,"
+    if marker in text:
+        text = text[:text.index(marker)]
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text + "".join(taxi_block(grounds, roads, junction_cells, true_cells)))
+    print("wrote Nav/Shapes.lua, %d KB" % (os.path.getsize(path) // 1024))
+
+
 def main():
     stamp, grounds, roads = read_nav()
     out = [stamp + "\n",
            "-- AzerothGPS data (c) 2026 AzerothGPS, all rights reserved. Do not edit by hand.\n",
-           "-- Where the roads run and how the explore pins join them, worked out from the terrain grid by\n",
-           "-- tools/shape_nav.py.\n",
+           "-- What joins AzerothGPS's roads up and how the explore pins and flight masters join them, worked out\n",
+           "-- over the ground (Nav/Terrain.lua) by tools/shape_nav.py.\n",
            "local _, VP = ...\n\n",
-           "-- [cont][a * 65536 + b] = the points between junctions a < b, from a, where the straight line is blocked.\n",
+           "-- [cont][a * 65536 + b] = the points along a walk in VP.Links between junctions a < b, from a.\n",
            "VP.Shapes = {\n"]
     junction_cells, true_cells, graphs, links = {}, {}, {}, {}
+    courses = read_bends()
     for cont, (xs, ys, edges) in sorted(roads.items()):
         gr = grounds.get(cont)
         if not gr:
             continue
         started = time.time()
+        bends_of = courses.get(cont, {})
         cells, at = [], {}
         for i in range(len(xs)):
             rc = gr.open_near(*gr.g.to_cell(xs[i], ys[i]))
@@ -329,33 +427,7 @@ def main():
             if rc:
                 at.setdefault(rc, i + 1)
         junction_cells[cont] = at
-        shaped, straight, lost, crossed, seen = [], 0, 0, 0, set()
-        for a, b, _ in edges:
-            key = (min(a, b), max(a, b))
-            if key in seen or a == b:
-                continue
-            seen.add(key)
-            a, b = key
-            pa, pb = (xs[a - 1], ys[a - 1]), (xs[b - 1], ys[b - 1])
-            if gr.clear(pa[0], pa[1], pb[0], pb[1]):
-                straight += 1
-                continue
-            ca, cb = cells[a - 1], cells[b - 1]
-            way = None
-            if ca and cb:
-                span = max(abs(ca[0] - cb[0]), abs(ca[1] - cb[1]))
-                way = gr.path(ca, cb, max(30, span), EDGE_CAP)
-                if not way:
-                    way = gr.path(ca, cb, max(30, span), EDGE_CAP, through=True)
-                    crossed += 1 if way else 0
-            if not way:
-                lost += 1
-                continue
-            points = gr.pull(pa, way, pb)
-            if points:
-                shaped.append((a * 65536 + b, points))
-            else:
-                straight += 1
+        shaped = []   # the points along each walk added below (the roads' own are in Roads.lua)
         # Roads that pass close by each other without a junction between them: a walk over open
         # ground from one junction to another nearby, where the roads only get there the long way.
         adj = {}
@@ -418,18 +490,52 @@ def main():
         joined = {cells[i - 1]: i for i in pieces[0] if cells[i - 1]}
         waiting = pieces[1:]
         # A piece may only reach the rest through another piece, so go round until a round joins
-        # nothing. First over open ground only; what's left then may cross blocked ground.
-        for through in (False, True):
-            progress = True
-            while progress and waiting:
-                progress, still = False, []
-                for piece in waiting:
-                    starts = {cells[i - 1]: i for i in piece if cells[i - 1]}
-                    reach_cost = LINK_YARDS / gr.g.cell + (STEEP * LINK_THROUGH / gr.g.cell if through else 0)
-                    found = gr.reach(list(starts), joined, 1, LINK_CAP + LINK_CAP_EACH * len(starts), reach_cost, through) if starts else []
-                    if not found:
-                        still.append(piece)
-                        continue
+        # nothing. Over open ground only. A join across blocked ground was tried and taken out:
+        # it put a road over the wall of Un'Goro Crater into Thousand Needles. Nothing in the
+        # data says where a wall can be crossed, so a piece the open ground doesn't reach stays
+        # apart, and a walk to it has no way (the route then takes a flight, or says so).
+        #
+        # With one exception the roads themselves give: a road that stops and carries on. Two
+        # dead ends in different pieces, close, each road pointing at the other end, and the line
+        # between them mostly open ground: the bridge at Thandol Span is drawn as two roads that
+        # stop 216 yards apart, facing each other. Those are joined straight.
+        degree = [0] * (len(xs) + 1)
+        comes_from = {}   # junction -> the point its road reaches it from
+        for a, b, _ in edges:
+            degree[a] += 1
+            degree[b] += 1
+            lo, hi = min(a, b), max(a, b)
+            pts = bends_of.get(lo * 65536 + hi, [])
+            line = [(xs[lo - 1], ys[lo - 1])] + list(zip(pts[0::2], pts[1::2])) + [(xs[hi - 1], ys[hi - 1])]
+            comes_from[lo], comes_from[hi] = line[1], line[-2]
+
+        def aim(a, b):
+            """How far off the line to b the road at dead end a points, in degrees."""
+            fx, fy = xs[a - 1] - comes_from[a][0], ys[a - 1] - comes_from[a][1]
+            gx, gy = xs[b - 1] - xs[a - 1], ys[b - 1] - ys[a - 1]
+            if math.hypot(fx, fy) == 0 or math.hypot(gx, gy) == 0:
+                return 180
+            return math.degrees(math.acos(max(-1, min(1, (fx * gx + fy * gy) / (math.hypot(fx, fy) * math.hypot(gx, gy))))))
+
+        def blocked_share(a, b):
+            d = math.hypot(xs[a - 1] - xs[b - 1], ys[a - 1] - ys[b - 1])
+            steps = max(1, int(d / 3))
+            bad = 0
+            for k in range(steps + 1):
+                t = k / steps
+                if gr.at(*gr.g.to_cell(xs[a - 1] + (xs[b - 1] - xs[a - 1]) * t, ys[a - 1] + (ys[b - 1] - ys[a - 1]) * t)) == 2:
+                    bad += 1
+            return bad / (steps + 1)
+
+        joined_ids = set(pieces[0])
+        carried = 0
+        progress = True
+        while progress and waiting:
+            progress, still = False, []
+            for piece in waiting:
+                starts = {cells[i - 1]: i for i in piece if cells[i - 1]}
+                found = gr.reach(list(starts), joined, 1, LINK_CAP + LINK_CAP_EACH * len(starts), LINK_YARDS / gr.g.cell) if starts else []
+                if found:
                     cell, _, way = found[0]
                     a, b = starts[way[0]], joined[cell]
                     pa, pb = (xs[a - 1], ys[a - 1]), (xs[b - 1], ys[b - 1])
@@ -439,10 +545,34 @@ def main():
                     joins.append((a, b, yards))
                     if points:
                         shaped.append((min(a, b) * 65536 + max(a, b), points if a < b else points[::-1]))
-                    joined.update(starts)
-                    progress = True
-                waiting = still
+                else:
+                    best = None
+                    for i in piece:
+                        if degree[i] != 1:
+                            continue
+                        for j in joined_ids:
+                            if degree[j] != 1:
+                                continue
+                            d = math.hypot(xs[i - 1] - xs[j - 1], ys[i - 1] - ys[j - 1])
+                            if d <= CARRY_YARDS and (best is None or d < best[0]) and aim(i, j) <= CARRY_AIM \
+                                    and aim(j, i) <= CARRY_AIM and blocked_share(i, j) <= CARRY_BLOCKED:
+                                best = (d, i, j)
+                    if not best:
+                        still.append(piece)
+                        continue
+                    joins.append((best[1], best[2], best[0]))
+                    carried += 1
+                    print("    a road that carries on: %d (%.0f, %.0f) to %d (%.0f, %.0f), %d yd" % (
+                        best[1], xs[best[1] - 1], ys[best[1] - 1], best[2], xs[best[2] - 1], ys[best[2] - 1], best[0]), flush=True)
+                joined.update(starts)
+                joined_ids.update(piece)
+                progress = True
+            waiting = still
         links[cont] = joins
+        for piece in waiting:
+            px = sum(xs[i - 1] for i in piece) / len(piece)
+            py = sum(ys[i - 1] for i in piece) / len(piece)
+            print("    apart: %d junctions around world %.0f, %.0f" % (len(piece), px, py), flush=True)
         graph = {}
         for a, b, length in edges + joins:
             graph.setdefault(a, []).append((b, length))
@@ -452,15 +582,14 @@ def main():
         for i in range(len(xs)):
             true_cells[cont].setdefault(gr.g.to_cell(xs[i], ys[i]), i + 1)
         print("continent %d: %d walks added between roads that pass close by; then the roads come in %d pieces "
-              "(the biggest has %d of %d junctions); %d joined on, %d left adrift" % (
-                  cont, local, len(pieces), len(pieces[0]), len(xs), len(joins) - local, len(waiting)), flush=True)
+              "(the biggest has %d of %d junctions); %d joined on (%d of them a road that carries on), %d left apart" % (
+                  cont, local, len(pieces), len(pieces[0]), len(xs), len(joins) - local, carried, len(waiting)), flush=True)
 
         out.append("  [%d] = {\n" % cont)
         for key, points in sorted(shaped):
             out.append("    [%d]={%s},\n" % (key, fmt_points(points)))
         out.append("  },\n")
-        print("continent %d: %d roads straight, %d shaped (%d of them across ground the grid has blocked), %d with no way (%.0fs)" % (
-            cont, straight, len(shaped), crossed, lost, time.time() - started))
+        print("continent %d: done in %.0fs" % (cont, time.time() - started), flush=True)
     out.append("}\n\n-- [cont] = { a, b, yards, ... }: walks that join the road network's separate pieces (bends in Shapes).\n")
     out.append("VP.Links = {\n")
     for cont, joins in sorted(links.items()):
@@ -568,10 +697,15 @@ def main():
     print("hops: %d walks between nearby pins (%d of them across ground the grid has blocked) (%.0fs)" % (
         hops, over, time.time() - started), flush=True)
 
+    out += taxi_block(grounds, roads, junction_cells, true_cells)
+
     with open(os.path.join(NAV, "Shapes.lua"), "w", encoding="utf-8", newline="\n") as f:
         f.write("".join(out))
     print("wrote Nav/Shapes.lua, %d KB" % (os.path.getsize(os.path.join(NAV, "Shapes.lua")) // 1024))
 
 
 if __name__ == "__main__":
-    main()
+    if "--taxi" in sys.argv:
+        taxi_only()
+    else:
+        main()

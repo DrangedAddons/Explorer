@@ -2,10 +2,11 @@
 --  Explorer - Walking
 --  Author: Dranged
 ---------------------------------------------------------
--- Getting somewhere on foot on a continent: the terrain grid (open, water, too steep), drawn
--- walls and the road network, from AzerothGPS's data (Nav/*.lua, built by
--- tools/build_nav_data.py with its author's permission). Ported from VendorPoint's Nav.lua,
--- which only measures a walk; this one also gives the way: the road junctions to pass.
+-- Getting somewhere on foot on a continent: the ground (AzerothGPS's terrain grid with its
+-- bridges and tunnels laid in), drawn walls and the road network with each road's course, from
+-- AzerothGPS's data (Nav/*.lua, built by tools/build_nav_data.py with its author's
+-- permission). Started from VendorPoint's Nav.lua, which only measures a walk; this one also
+-- gives the way: the points to pass.
 --
 -- A walk is a straight line when the ground allows it. Otherwise it's a straight walk to a
 -- road junction nearby, along the roads, and a straight walk off the last junction.
@@ -304,6 +305,15 @@ function Nav.Approach(cont, overlay)
     return out
 end
 
+-- The same for a flight master (FarstriderLib's node ID).
+function Nav.TaxiApproach(cont, node)
+    local a = node and NS.Taxi and NS.Taxi[node]
+    if not a or a[1] ~= cont or not a[2] then return nil end
+    local out = {}
+    for i = 2, #a do out[#out + 1] = a[i] end
+    return out
+end
+
 -- The walk worked out ahead between two pins near each other, where the straight line is
 -- blocked and the roads make much more of it: yards, and the points on the way from `from`.
 local function Hop(from, to)
@@ -326,7 +336,7 @@ end
 -- For a start no straight line gets to a junction from (the player in a canyon): spread out
 -- from it over open ground, cell by cell, until junctions turn up. Slow next to the rest
 -- (thousands of cells), so it's capped, and `pause` (a coroutine's yield) is called as it goes.
-local REACH_YARDS, REACH_CELLS, REACH_WANT, PAUSE_EVERY = 900, 12000, 2, 500
+local REACH_YARDS, REACH_CELLS, REACH_WANT, PAUSE_EVERY = 2500, 40000, 2, 500
 
 local junctionAt = {}   -- [cont] = { [row * 65536 + col] = node }
 local wallBuckets = {}  -- [cont] = { [bx * 4096 + by] = { ax, ay, bx, by, ... } } on a 60-yard grid
@@ -497,7 +507,8 @@ end
 --                         the bends of the roads between them, and the way off
 function Nav.From(cont, sx, sy, onto)
     local g = Graph(cont)
-    local shapes = NS.Shapes and NS.Shapes[cont] or {}
+    -- the points along a road (AzerothGPS's own, NS.Bends) or along a walk added between roads (NS.Shapes)
+    local bendsOf, shapes = NS.Bends and NS.Bends[cont] or {}, NS.Shapes and NS.Shapes[cont] or {}
     local roadDist, roadPrev, roadOnto   -- found the first time a direct walk fails or a road might be shorter
     local ctx = {}
 
@@ -547,7 +558,8 @@ function Nav.From(cont, sx, sy, onto)
                 points[#points + 1], points[#points + 2] = g.xs[a], g.ys[a]
                 local b = chain[i - 1]
                 if b then
-                    local bends = shapes[math.min(a, b) * 65536 + math.max(a, b)]
+                    local key = math.min(a, b) * 65536 + math.max(a, b)
+                    local bends = bendsOf[key] or shapes[key]
                     if bends then
                         if a < b then
                             for _, v in ipairs(bends) do points[#points + 1] = v end

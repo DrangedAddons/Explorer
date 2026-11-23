@@ -52,60 +52,185 @@ local function ZoneName(z)
     return type(title) == "string" and title or ("Zone " .. z[2])
 end
 
+-- The character's own record of what's explored: the pieces of a zone's map that are
+-- revealed, as "width:height:offsetX:offsetY". Asked again at every scan (at login the game
+-- may not have sent it yet). false when the game can't say.
+local revealed = {}
+
+local function Revealed(map)
+    local set = revealed[map]
+    if set == nil then
+        set = false
+        local api = C_MapExplorationInfo and C_MapExplorationInfo.GetExploredMapTextures
+        if api then
+            local ok, list = pcall(api, map)
+            if ok and type(list) == "table" then
+                set = {}
+                for _, info in ipairs(list) do
+                    if type(info) == "table" and info.textureWidth then
+                        set[info.textureWidth .. ":" .. info.textureHeight .. ":" .. info.offsetX .. ":" .. info.offsetY] = true
+                    end
+                end
+            end
+        end
+        revealed[map] = set
+    end
+    return set
+end
+
+-- Whether an area (a row of NS.Areas) is revealed on the character's map; nil when that
+-- can't be told (no such piece on the map's art, or the game doesn't say).
+local function OnMap(a)
+    local piece = a[6]
+    if not piece or piece == "" then return nil end
+    local set = Revealed(a[1])
+    if not set then return nil end
+    return set[piece] == true
+end
+
+-- One zone. Every area gets its state from the challenge where the challenge reports it,
+-- and from the character's own map where it doesn't (a challenge the game lists no criteria
+-- for, or lists differently). An area neither can speak for is left out of the count, and a
+-- zone with none counted is unknown: never "done".
+--
+-- A criterion is matched to an area by the overlay ID it carries, else by the area's name
+-- (in the client's language, then English). Only when the game gives neither for any of
+-- them are the criteria taken in the data's order.
 local function ScanZone(z)
     local id = z[1]
     local zone = { id = id, map = z[2], name = ZoneName(z), done = 0, total = 0, areas = {} }
-    -- Fallbacks for a criterion that comes back without a usable asset: its name, then its place.
-    local byName = {}
+    local inZone, byName, localName = {}, {}, {}
     for i = 3, #z do
         local a = NS.Areas[z[i]]
-        if a then byName[a[4]] = z[i] end
-    end
-    local n = tonumber(GetAchievementNumCriteria(id)) or 0
-    zone.known = n > 0
-    local used = {}
-    for i = 1, n do
-        local text, ctype, done, _, _, _, _, asset = GetAchievementCriteriaInfo(id, i)
-        if ctype == nil or ctype == EXPLORE_AREA then
-            local overlay = (NS.Areas[asset] and asset) or byName[text] or z[i + 2]
-            local a = overlay and NS.Areas[overlay]
-            if a and not used[overlay] then
-                used[overlay] = true
-                zone.total = zone.total + 1
-                if done then zone.done = zone.done + 1 end
-                zone.areas[#zone.areas + 1] = {
-                    overlay = overlay, name = (type(text) == "string" and text ~= "" and text) or a[4],
-                    map = a[1], x = a[2], y = a[3], done = done and true or false, zone = zone,
-                }
+        if a then
+            inZone[z[i]] = true
+            byName[a[4]] = byName[a[4]] or z[i]
+            if C_Map.GetAreaInfo and a[5] then
+                local ok, name = pcall(C_Map.GetAreaInfo, a[5])
+                if ok and type(name) == "string" and name ~= "" then
+                    localName[z[i]] = name
+                    byName[name] = byName[name] or z[i]
+                end
             end
         end
     end
+
+    local n = tonumber(GetAchievementNumCriteria(id)) or 0
+    local rows, ticked, label, matched = {}, {}, {}, 0
+    for i = 1, n do
+        local text, ctype, done, _, _, _, _, asset = GetAchievementCriteriaInfo(id, i)
+        local row = { text = text, done = done and true or false, explore = ctype == nil or ctype == EXPLORE_AREA }
+        rows[i] = row
+        if row.explore then
+            local overlay = (inZone[asset] and asset) or (type(text) == "string" and byName[text]) or nil
+            if overlay and ticked[overlay] == nil then
+                ticked[overlay], row.overlay, matched = row.done, overlay, matched + 1
+                if type(text) == "string" and text ~= "" then label[overlay] = text end
+            end
+        end
+    end
+    local byOrder = false
+    if matched == 0 and n > 0 and n == #z - 2 then
+        byOrder = true
+        for i = 1, n do
+            if rows[i].explore and inZone[z[i + 2]] then
+                ticked[z[i + 2]], rows[i].overlay = rows[i].done, z[i + 2]
+                if type(rows[i].text) == "string" and rows[i].text ~= "" then label[z[i + 2]] = rows[i].text end
+            end
+        end
+    end
+    zone.criteria, zone.matched, zone.byOrder = n, matched, byOrder
+
+    for i = 3, #z do
+        local overlay = z[i]
+        local a = NS.Areas[overlay]
+        if a then
+            local onMap = OnMap(a)
+            local done, source = ticked[overlay], "challenge"
+            if done == nil then done, source = onMap, "map" end
+            if done ~= nil then
+                zone.total = zone.total + 1
+                if done then zone.done = zone.done + 1 end
+                zone.areas[#zone.areas + 1] = {
+                    overlay = overlay, name = label[overlay] or localName[overlay] or a[4],
+                    map = a[1], x = a[2], y = a[3], done = done, zone = zone,
+                    source = source, onMap = onMap,
+                }
+            else
+                zone.unread = (zone.unread or 0) + 1   -- neither the challenge nor the map speaks for it
+            end
+        end
+    end
+    zone.known = zone.total > 0
     return zone
+end
+
+-- The map the player is on, and the one above it (a city sits inside its zone).
+local function PlayerMaps()
+    local ok, map = pcall(C_Map.GetBestMapForUnit, "player")
+    if not ok or type(map) ~= "number" then return nil, nil end
+    local info = C_Map.GetMapInfo(map)
+    return map, info and info.parentMapID or nil
 end
 
 local function Scan()
     local first = next(seen) == nil
     local out, index = {}, {}
+    revealed = {}
+    -- A tick is told only for the zone the player is in: that's the only place one can come
+    -- from, and it keeps data that arrives late (after a login) from reading as a discovery.
+    local here, above = PlayerMaps()
     for _, z in ipairs(NS.Zones) do
         local ok, zone = pcall(ScanZone, z)
-        if ok then
-            out[#out + 1] = zone
-            for _, a in ipairs(zone.areas) do
-                if a.done and seen[a.overlay] == false and not first then
-                    if db.announce then
-                        NS.Print(("%s explored. %s: %d/%d."):format(a.name, zone.name, zone.done, zone.total))
-                    end
-                    if db.popup and NS.Toast then
-                        pcall(NS.Toast, a.name, zone.name, zone.done, zone.total)
-                    end
+        if not ok then
+            -- a zone the scan broke on shows as unknown: it must not vanish, or read as done
+            zone = { id = z[1], map = z[2], name = "Zone " .. tostring(z[2]), done = 0, total = 0, areas = {},
+                known = false, failed = tostring(zone) }
+            pcall(function() zone.name = ZoneName(z) end)
+        end
+        out[#out + 1] = zone
+        for _, a in ipairs(zone.areas) do
+            if a.done and seen[a.overlay] == false and not first and (a.map == here or a.map == above) then
+                if db.announce then
+                    NS.Print(("%s explored. %s: %d/%d."):format(a.name, zone.name, zone.done, zone.total))
                 end
-                seen[a.overlay] = a.done
-                index[a.overlay] = a
+                if db.popup and NS.Toast then
+                    pcall(NS.Toast, a.name, zone.name, zone.done, zone.total)
+                end
             end
+            seen[a.overlay] = a.done
+            index[a.overlay] = a
         end
     end
     progress, dirty, byOverlay = out, false, index
     return out
+end
+
+-- What the game says about one zone, for a report: where each area's state came from, and
+-- where the challenge and the character's map disagree.
+function NS.Check(map)
+    local zone
+    for _, z in ipairs(NS.Progress()) do
+        if z.map == map then zone = z end
+    end
+    if not zone then
+        NS.Print("This map has no explore challenge. Stand in the zone (or open its map) and try again.")
+        return
+    end
+    NS.Print(("%s, challenge %d: %d/%d explored."):format(zone.name, zone.id, zone.done, zone.total))
+    if zone.failed then NS.Print("  reading it failed: " .. zone.failed) end
+    NS.Print(("  the challenge lists %d criteria; %d matched to areas%s"):format(zone.criteria or 0, zone.matched or 0,
+        zone.byOrder and " (none by ID or name: taken in order)" or ""))
+    if zone.unread then NS.Print(("  %d areas have no state from the challenge or the map"):format(zone.unread)) end
+    local differ = 0
+    for _, a in ipairs(zone.areas) do
+        local onMap = a.onMap == nil and "-" or (a.onMap and "yes" or "no")
+        if a.source == "challenge" and a.onMap ~= nil and a.onMap ~= a.done then differ = differ + 1 end
+        NS.Print(("  %s: %s (from the %s; revealed on your map: %s)"):format(a.name, a.done and "explored" or "not explored", a.source, onMap))
+    end
+    if differ > 0 then
+        NS.Print(("  %d areas where the challenge and your map disagree. The challenge's tick is what counts here."):format(differ))
+    end
 end
 
 function NS.Progress()
@@ -834,6 +959,10 @@ SlashCmdList.EXPLORER = function(msg)
     elseif cmd == "list" then
         dirty = true
         PrintZones()
+    elseif cmd == "check" then
+        dirty = true
+        local map = (WorldMapFrame and WorldMapFrame:IsShown() and WorldMapFrame:GetMapID()) or C_Map.GetBestMapForUnit("player")
+        NS.Check(map)
     elseif cmd == "test" then
         if NS.ToastSample then NS.ToastSample() end
     elseif cmd == "route" then
@@ -859,6 +988,7 @@ SlashCmdList.EXPLORER = function(msg)
         NS.Print("/ep route - plan the route again from where you stand, and print it")
         NS.Print("/ep skip - pass over the stop the arrow points at")
         NS.Print("/ep arrow - show or hide the arrow")
+        NS.Print("/ep check - what the game reports for this zone (or the zone whose map is open), area by area")
         NS.Print("/ep test - show a sample of the \"area explored\" popup (drag it to move it)")
     end
 end
