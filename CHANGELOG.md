@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1
+
+The walking data was checked zone by zone (every walk between two pins of a zone, 3,806 of them) and fixed where it came up short.
+
+- **Every pin has a way to a road.** Five had none (Plaguemist Ravine, Altar of Storms, Land's End Beach, Tower of Eldara, Ravencrest Monument) and got a straight line.
+- **Pins in canyons, caves and tunnels.** The terrain data marks those as blocked ground, the same as a cliff. Such a pin was sent out to the nearest open ground and back in; it now goes straight to the road across as little blocked ground as will do.
+- **Nearby pins go round, not the long way.** Two pins close together with something between them were sent by road, sometimes many times the distance. 377 such pairs now have a walk of their own round the obstacle.
+- **Lines keep clear of blocked ground.** A stretch that grazed the corner of blocked ground could count as blocked, which made the arrow point at a nearer spot than it needed to.
+- After this, 2 of the 3,806 walks have a stretch over blocked ground away from the roads (Blackrock Mountain to Blackrock Stronghold, Gordunni Outpost to Camp Mojache). `tools/test/sweep.py` runs the check.
+
 ## 0.8.0
 
 Fixes the route cutting through cliffs (reported in Mount Hyjal), and adds flights inside a zone.

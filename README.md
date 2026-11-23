@@ -46,7 +46,9 @@ Walks go by the ground: `Nav.lua` knows steep ground, water, walls and the road 
 
 The data in `Nav/` is AzerothGPS's terrain grid, walls and roads, (c) AzerothGPS, all rights reserved, used with its author's permission. `tools/build_nav_data.py` rebuilds it from the latest WoW Forever release of AzerothGPS on CurseForge.
 
-AzerothGPS's roads are junctions and the length of road between each two, in several unconnected pieces. `tools/shape_nav.py` (run by the build) works out the rest from the terrain grid into `Nav/Shapes.lua`: where each road runs between its junctions when the straight line is blocked, walks that join the pieces, and the walk from every explore pin to the junctions nearest it. It covers the Eastern Kingdoms and Kalimdor; anywhere else a walk is a straight line.
+AzerothGPS's roads are junctions and the length of road between each two, in several unconnected pieces. `tools/shape_nav.py` (run by the build) works out the rest from the terrain grid into `Nav/Shapes.lua`: where each road runs between its junctions when the straight line is blocked, walks that join the pieces, the walk from every explore pin to the junctions nearest it, and a walk between pins that are close together with something in the way. The grid can't tell a tunnel, a cave or a canyon floor from a cliff; where it closes a pin off, the way crosses as little blocked ground as will do. It takes about ten minutes to run.
+
+`tools/test/sweep.py` checks the result zone by zone: the walk between every two pins of a zone, how much of it is over blocked ground away from the roads, and how it compares with the straight distance. It covers the Eastern Kingdoms and Kalimdor; anywhere else a walk is a straight line.
 
 ## Install
 

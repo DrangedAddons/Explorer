@@ -299,9 +299,25 @@ end
 function Nav.Approach(cont, overlay)
     local a = overlay and NS.Approach and NS.Approach[overlay]
     if not a or a[1] ~= cont or not a[2] then return nil end
-    local out = {}
+    local out = { pin = overlay }   -- which pin these are for: two pins may have a walk of their own (Hop)
     for i = 2, #a do out[#out + 1] = a[i] end
     return out
+end
+
+-- The walk worked out ahead between two pins near each other, where the straight line is
+-- blocked and the roads make much more of it: yards, and the points on the way from `from`.
+local function Hop(from, to)
+    local h = NS.Hops and NS.Hops[math.min(from, to) * 65536 + math.max(from, to)]
+    if not h then return nil end
+    local points = {}
+    if from < to then
+        for i = 2, #h do points[#points + 1] = h[i] end
+    else
+        for i = #h - 1, 2, -2 do
+            points[#points + 1], points[#points + 2] = h[i], h[i + 1]
+        end
+    end
+    return h[1], points
 end
 
 ---------------------------------------------------------
@@ -473,8 +489,9 @@ end
 -- A context for walks from one start. `onto` is the ways onto the roads from the start when
 -- they're known already (Nav.Approach for a pin, Nav.Reach for the player); without it they
 -- are the junctions a straight line reaches.
---   ctx.Walk(x, y, onto)  yards and "direct" or "road"; nil when neither a straight walk nor
---                         the roads reach it. `onto` here is the end's ways onto the roads.
+--   ctx.Walk(x, y, onto)  yards and "direct", "road" or "hop" (a walk worked out ahead between
+--                         two pins); nil when nothing reaches it. `onto` here is the end's ways
+--                         onto the roads.
 --   ctx.Path(x, y, onto)  the same, plus the points to pass on the way as { x1, y1, ... }
 --                         (empty for a direct walk): the way onto the road, the junctions and
 --                         the bends of the roads between them, and the way off
@@ -495,6 +512,10 @@ function Nav.From(cont, sx, sy, onto)
             local d = roadDist[s[1]]
             if d and (not best or d + s[2] < best) then best, how, last = d + s[2], "road", s end
         end
+        if onto and off and onto.pin and off.pin then
+            local yards, points = Hop(onto.pin, off.pin)
+            if yards and (not best or yards < best) then best, how, last = yards, "hop", points end
+        end
         return best, how, last
     end
 
@@ -506,8 +527,11 @@ function Nav.From(cont, sx, sy, onto)
     function ctx.Path(x, y, off)
         local yards, how, last = Best(x, y, off)
         if not yards then return nil end
+        local roadFrom, roadTo
         local points = {}
-        if how == "road" then
+        if how == "hop" then
+            points = last
+        elseif how == "road" then
             local chain, node, guard = {}, last[1], 0
             while node and guard < 5000 do
                 chain[#chain + 1] = node
@@ -516,6 +540,7 @@ function Nav.From(cont, sx, sy, onto)
             -- onto the road
             local first = roadOnto[chain[#chain]]
             for _, v in ipairs(first and first[3] or {}) do points[#points + 1] = v end
+            roadFrom = #points + 1
             -- along it: each junction, and the bends of the road to the next
             for i = #chain, 1, -1 do
                 local a = chain[i]
@@ -534,6 +559,7 @@ function Nav.From(cont, sx, sy, onto)
                     end
                 end
             end
+            roadTo = #points - 1
             -- and off it: the end's way onto the road, backwards
             local way = last[3]
             if way then
@@ -542,7 +568,8 @@ function Nav.From(cont, sx, sy, onto)
                 end
             end
         end
-        return yards, how, points
+        -- roadFrom, roadTo: where in the points the first and last junction sit (the stretch on the roads)
+        return yards, how, points, roadFrom, roadTo
     end
 
     return ctx

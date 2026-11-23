@@ -22,6 +22,10 @@ Output (world yards, x north, y west):
                                                        from an explore pin (Data.lua) to up to
                                                        two junctions: the walk, and the points
                                                        on the way from the pin
+  VP.Hops[a * 65536 + b] = { yards, x1, y1, ... }      between two pins near each other (overlay IDs
+                                                       a < b, points from a) whose straight line is
+                                                       blocked: a walk round over the ground, where
+                                                       that is much shorter than the way by road
 """
 import csv
 import heapq
@@ -38,10 +42,16 @@ ROOT = B.ROOT
 NAV = os.path.join(ROOT, "Nav")
 CACHE = os.path.join(ROOT, "tools", ".cache")
 SQRT2 = math.sqrt(2)
+ROOM = 2.5             # yards of room a way's straight stretches keep from blocked ground
 BUCKET = 60            # yards: wall stretches are looked up by this grid
 EDGE_CAP = 400000      # cells an edge's search may open
-REACH_CAP = 400000     # cells a pin's search may open
-REACH_YARDS = 3000     # how far a pin looks for junctions, walking
+REACH_CAP = 1500000    # cells a pin's search may open
+REACH_YARDS = 6000     # how far a pin looks for junctions, walking
+REACH_THROUGH = 400    # ... and how many yards of blocked ground it may cross when it has to
+HOP_YARDS = 700        # pins this close as the bird flies get a walk of their own worked out ...
+HOP_CAP = 80000        # ... (cells that search may open)
+HOP_BEATS = 0.7        # ... kept when it's under this much of the way by road
+HOP_DETOUR = 3         # ... and it may cross blocked ground when the roads take this many times the bird's distance
 LOCAL_YARDS = 450      # junctions this close over open ground get a walk between them ...
 LOCAL_RATIO = 2.5      # ... when the roads take this many times longer to get there
 LOCAL_WANT = 10        # ... looking at the nearest this many
@@ -122,6 +132,20 @@ class Ground:
                     return False
                 last = rc
         return True
+
+    def roomy(self, x1, y1, x2, y2):
+        """clear(), with room to spare: the same line a little to either side is clear too. A way's
+        corners are cut with this, so a line never grazes a blocked cell's corner (written out to a
+        tenth of a yard and sampled again in game, a grazing line comes out blocked half the time)."""
+        if not self.clear(x1, y1, x2, y2):
+            return False
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy)
+        if length < 1:
+            return True
+        ox, oy = -dy / length * ROOM, dx / length * ROOM
+        return (self.clear(x1 + ox, y1 + oy, x2 + ox, y2 + oy) and
+                self.clear(x1 - ox, y1 - oy, x2 - ox, y2 - oy))
 
     def open_near(self, r, c):
         """The cell itself when it's open ground, else the nearest one that is, within NUDGE cells."""
@@ -231,7 +255,7 @@ class Ground:
         out, i = [], 0
         while i < len(pts) - 1:
             j = i + 1
-            while j + 1 < len(pts) and self.clear(pts[i][0], pts[i][1], pts[j + 1][0], pts[j + 1][1]):
+            while j + 1 < len(pts) and self.roomy(pts[i][0], pts[i][1], pts[j + 1][0], pts[j + 1][1]):
                 j += 1
             if j < len(pts) - 1:
                 out.append(pts[j])
@@ -292,7 +316,7 @@ def main():
            "local _, VP = ...\n\n",
            "-- [cont][a * 65536 + b] = the points between junctions a < b, from a, where the straight line is blocked.\n",
            "VP.Shapes = {\n"]
-    junction_cells, links = {}, {}
+    junction_cells, true_cells, graphs, links = {}, {}, {}, {}
     for cont, (xs, ys, edges) in sorted(roads.items()):
         gr = grounds.get(cont)
         if not gr:
@@ -419,6 +443,14 @@ def main():
                     progress = True
                 waiting = still
         links[cont] = joins
+        graph = {}
+        for a, b, length in edges + joins:
+            graph.setdefault(a, []).append((b, length))
+            graph.setdefault(b, []).append((a, length))
+        graphs[cont] = graph
+        true_cells[cont] = {}
+        for i in range(len(xs)):
+            true_cells[cont].setdefault(gr.g.to_cell(xs[i], ys[i]), i + 1)
         print("continent %d: %d walks added between roads that pass close by; then the roads come in %d pieces "
               "(the biggest has %d of %d junctions); %d joined on, %d left adrift" % (
                   cont, local, len(pieces), len(pieces[0]), len(xs), len(joins) - local, len(waiting)), flush=True)
@@ -438,33 +470,103 @@ def main():
 
     done, none, crossed = 0, 0, 0
     started = time.time()
-    for overlay, (cont, x, y) in sorted(pins().items()):
+    all_pins = pins()
+    ways_of = {}
+    for overlay, (cont, x, y) in sorted(all_pins.items()):
         gr, at = grounds.get(cont), junction_cells.get(cont)
         if not gr or not at:
             continue
         xs, ys, _ = roads[cont]
-        start = gr.open_near(*gr.g.to_cell(x, y))
-        found = gr.reach(start, at, REACH_WANT, REACH_CAP, REACH_YARDS / gr.g.cell) if start else []
-        if start and not found:
-            # closed off by the grid (a plateau, a cave mouth, an island): the way that crosses least of it
-            found = gr.reach(start, at, 1, REACH_CAP, REACH_YARDS / gr.g.cell, through=True)
-            crossed += 1 if found else 0
+        cell = gr.g.to_cell(x, y)
+        found, through = [], False
+        if gr.at(*cell) != 2:
+            found = gr.reach(cell, at, REACH_WANT, REACH_CAP, REACH_YARDS / gr.g.cell)
+        if not found:
+            # The pin is on ground the grid has blocked (a canyon floor, a cave, a tunnel: the grid
+            # can't tell those from a cliff) or closed off by it. From the pin itself then, across
+            # as little blocked ground as will do, to the junctions where they really are.
+            through = True
+            found = gr.reach(cell, true_cells[cont], REACH_WANT, REACH_CAP,
+                             (REACH_YARDS + STEEP * REACH_THROUGH) / gr.g.cell, through=True)
         if not found:
             none += 1
+            print("  no way to a road for pin %d" % overlay, flush=True)
             continue
-        parts = []
-        for cell, walked, way in found:
-            j = at[cell]
+        crossed += 1 if through else 0
+        parts, ways = [], []
+        for c, _, way in found:
+            j = (true_cells[cont] if through else at)[c]
             points = gr.pull((x, y), way, (xs[j - 1], ys[j - 1]))
-            # the walk, measured along the corners
             line = [(x, y)] + points + [(xs[j - 1], ys[j - 1])]
             yards = sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(line, line[1:]))
+            ways.append((j, yards))
             parts.append("{%d,%s,{%s}}" % (j, B.fmt(yards), fmt_points(points)))
+        ways_of[overlay] = ways
         out.append("  [%d]={%d,%s},\n" % (overlay, cont, ",".join(parts)))
         done += 1
     out.append("}\n")
     print("pins: %d joined to the roads (%d of them across ground the grid has blocked), %d with no junction in reach (%.0fs)" % (
-        done, crossed, none, time.time() - started))
+        done, crossed, none, time.time() - started), flush=True)
+
+    # Pins near each other with blocked ground between them: the walk round, when the roads make much more of it.
+    out.append("\n-- [a * 65536 + b] = { yards, x1, y1, ... }: the walk between two nearby pins (overlay IDs a < b, points from a)\n")
+    out.append("-- where the straight line is blocked and going round over the ground is much shorter than by road.\n")
+    out.append("VP.Hops = {\n")
+    started, hops, over = time.time(), 0, 0
+    by_cont = {}
+    for overlay, (cont, x, y) in all_pins.items():
+        by_cont.setdefault(cont, []).append((overlay, x, y))
+    for cont, plist in sorted(by_cont.items()):
+        gr, graph = grounds.get(cont), graphs.get(cont)
+        if not gr or graph is None:
+            continue
+        plist.sort()
+
+        def by_road(overlay):
+            dist, heap = {}, []
+            for j, yards in ways_of.get(overlay, ()):
+                if yards < dist.get(j, 1e18):
+                    dist[j] = yards
+                    heapq.heappush(heap, (yards, j))
+            while heap:
+                d, u = heapq.heappop(heap)
+                if d > dist.get(u, 1e18):
+                    continue
+                for v, length in graph.get(u, ()):
+                    if d + length < dist.get(v, 1e18):
+                        dist[v] = d + length
+                        heapq.heappush(heap, (d + length, v))
+            return dist
+
+        roads_from = {}
+        for i, (a, ax, ay) in enumerate(plist):
+            for b, bx, by in plist[i + 1:]:
+                bird = math.hypot(ax - bx, ay - by)
+                if bird > HOP_YARDS or bird < 1 or gr.clear(ax, ay, bx, by):
+                    continue
+                if a not in roads_from:
+                    roads_from[a] = by_road(a)
+                road = min((roads_from[a].get(j, 1e18) + yards for j, yards in ways_of.get(b, ())), default=1e18)
+                ca, cb = gr.g.to_cell(ax, ay), gr.g.to_cell(bx, by)
+                margin = max(25, max(abs(ca[0] - cb[0]), abs(ca[1] - cb[1])))
+                oa, ob = gr.open_near(*ca), gr.open_near(*cb)
+                way = gr.path(oa, ob, margin, HOP_CAP) if oa and ob else None
+                crossing = False
+                if not way and road > bird * HOP_DETOUR:
+                    way = gr.path(ca, cb, margin, HOP_CAP, through=True)
+                    crossing = True
+                if not way:
+                    continue
+                points = gr.pull((ax, ay), way, (bx, by))
+                line = [(ax, ay)] + points + [(bx, by)]
+                yards = sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(line, line[1:]))
+                if yards < road * HOP_BEATS:
+                    out.append("  [%d]={%s%s},\n" % (a * 65536 + b, B.fmt(yards), "," + fmt_points(points) if points else ""))
+                    hops += 1
+                    over += 1 if crossing else 0
+    out.append("}\n")
+    print("hops: %d walks between nearby pins (%d of them across ground the grid has blocked) (%.0fs)" % (
+        hops, over, time.time() - started), flush=True)
 
     with open(os.path.join(NAV, "Shapes.lua"), "w", encoding="utf-8", newline="\n") as f:
         f.write("".join(out))

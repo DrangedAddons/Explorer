@@ -450,7 +450,7 @@ local function Refine(e)
         local a, b = order[k - 1], order[k]
         local ctx = from[a] or Nav.From(inst, pts[a][1], pts[a][2], onto[a])
         local yards, how, points = ctx.Path(pts[b][1], pts[b][2], onto[b])
-        if yards and how == "road" then
+        if yards and how ~= "direct" then
             ways[areas[a].overlay .. ">" .. areas[b].overlay] = { inst = inst, points = points }
         end
     end
@@ -605,7 +605,7 @@ local function UpdateWay(g, pm, px, py)
         local yards, how, points = Nav.From(inst, wx, wy, onto).Path(twx, twy, Nav.Approach(inst, overlay))
         local new = { at = now, px = wx, py = wy, tx = twx, ty = twy, inst = inst }
         local bird = math.sqrt((twx - wx) ^ 2 + (twy - wy) ^ 2)
-        if yards and how == "road" then
+        if yards and how ~= "direct" then
             new.yards, new.points = yards, points
             new.x, new.y = Nav.Ahead(inst, wx, wy, points, twx, twy)
         end
