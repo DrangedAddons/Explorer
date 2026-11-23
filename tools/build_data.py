@@ -20,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, "tools", ".cache")
 PRODUCT = "wowf"
 TABLES = ["Achievement", "Achievement_Category", "CriteriaTree", "Criteria", "WorldMapOverlay",
-          "UiMap", "UiMapXMapArt", "UiMapArt", "UiMapArtStyleLayer", "UiMapAssignment"]
+          "UiMap", "UiMapXMapArt", "UiMapArt", "UiMapArtStyleLayer", "UiMapAssignment", "AreaTable"]
 # Classic Era's copies, cached as ClassicEra_<table>.csv: the layout the old hit rectangles
 # were drawn for (see "Maps Forever redrew to new bounds" in main).
 ERA_PRODUCT = "wow_classic_era"
@@ -112,6 +112,8 @@ def main():
     style_size = {r["UiMapArtStyleID"]: (int(r["LayerWidth"]), int(r["LayerHeight"]))
                   for r in load("UiMapArtStyleLayer") if r["LayerIndex"] == "0"}
     map_name = {int(r["ID"]): r["Name_lang"] for r in load("UiMap")}
+    # The level an area gives exploration XP for; a zone's level is the middle one of its areas.
+    area_level = {r["ID"]: int(r["ExplorationLevel"]) for r in load("AreaTable")}
 
     kids = {}
     for r in load("CriteriaTree"):
@@ -155,7 +157,7 @@ def main():
 
     zones, areas, skipped, rebounded = [], {}, [], {}
     for a in load("Achievement"):
-        rows = []
+        rows, levels = [], []
         for k in kids.get(a["Criteria_tree"], []):
             c = criteria.get(k["CriteriaID"])
             if not c or c["Type"] != EXPLORE_AREA:
@@ -181,6 +183,8 @@ def main():
             x = min(98.0, max(2.0, x * 100))
             y = min(98.0, max(2.0, y * 100))
             rows.append((int(asset), ui_map, round(x, 1), round(y, 1), k["Description_lang"]))
+            if area_level.get(o["AreaID_0"], 0) > 0:
+                levels.append(area_level[o["AreaID_0"]])
         if not rows:
             continue
         # The zone's map is the one most of its areas are drawn on.
@@ -192,7 +196,7 @@ def main():
         zones.append({
             "id": int(a["ID"]), "map": ui_map, "title": a["Title_lang"],
             "order": (int(cat.get("Ui_order", 0)), int(a["Ui_order"]), int(a["ID"])),
-            "rows": rows,
+            "rows": rows, "level": sorted(levels)[len(levels) // 2] if levels else None,
         })
         for r in rows:
             areas[r[0]] = r
@@ -222,6 +226,16 @@ def main():
     for z in zones:
         ids = ", ".join(str(r[0]) for r in z["rows"])
         out.append("  {%d, %d, %s}, -- %s (%s)" % (z["id"], z["map"], ids, z["title"], map_name.get(z["map"], "?")))
+    out += [
+        "}",
+        "",
+        "-- [uiMapID] = the zone's level: the middle one of its areas' exploration levels (the game's",
+        "-- AreaTable). Zones the table has no levels for (Mount Hyjal, Shen'dralas) are left out.",
+        "NS.ZoneLevels = {",
+    ]
+    for z in zones:
+        if z["level"]:
+            out.append("  [%d] = %d, -- %s" % (z["map"], z["level"], map_name.get(z["map"], "?")))
     out += ["}", ""]
 
     with open(os.path.join(ROOT, "Data.lua"), "w", encoding="utf-8", newline="\n") as f:

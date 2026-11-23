@@ -7,11 +7,14 @@ World of Warcraft: Forever addon. Puts a pin on the world map for every area you
 - **The zone you're in:** a spyglass pin on each area the challenge hasn't ticked yet. Hover it for the area name and the zone's progress. Click it to set a waypoint there. On the continent map they show as small gold dots.
 - **Other zones:** open a zone's map and its unexplored areas show as small faint markers that stay out of the way of the map's other icons. Hover one for its name, click it for a waypoint. "Zones I'm not in" in the settings switches them to full pins or off.
 - **Continent maps:** hover a zone and a line under its name says "Explored 7/9". Fully explored zones have no line. Only the zone you're in has markers at this level.
+- **Route:** the areas you have left, in an order worth walking. Your zone's areas come first, as a short path from where you stand; then the other zones, each time the one quickest to reach (flight paths you know, boats, zeppelins, the tram). Pins are numbered in that order and joined by a line. "Route covers" in the settings picks your zone, your continent or everything, and zones more than 5 levels above you are left out unless you say otherwise.
+- **Arrow:** points at the next stop and turns as you turn, with the stop's name, distance and time. For a stop in another zone it points at the first leg of the trip ("Talk to the Flightmaster to travel to ..."). Click it for a waypoint, right-click to skip the stop, drag to move, scroll to resize.
 - **Popup** when an area gets its tick: a banner near the top of the screen with the area, its zone and the zone's new count. `/ep test` (or "Sample" in the settings) shows a sample you can drag to move, scroll on to resize, and right-click to reset.
 - **Chat line** for the same, if you want it in the log too.
 - `/explorer` (or `/ep`) opens the window: progress per zone (click a zone to open its map) and the settings.
 - `/ep next` sets a waypoint on the nearest unexplored area of the zone you're in.
 - `/ep list` prints what's left, zone by zone.
+- `/ep route` plans the route again from where you stand and prints it. `/ep skip` passes over the current stop. `/ep arrow` shows or hides the arrow.
 
 Waypoints are the game's own map pin, named in WaypointUI when that addon is loaded.
 
@@ -30,6 +33,14 @@ Each pin is at the middle of the part of the map that reveals when you explore t
 ```
 python tools/build_data.py --refresh
 ```
+
+## Travel planning
+
+Travel between zones is worked out by [FarstriderLib](https://github.com/Deathwing/FarstriderLib) and its data package, by Savi and Deathwing (GPL-3.0), bundled in `Libs/`. Only its WoW Forever files are included. `tools/vendor_farstrider.py` refreshes the bundled copy from an installed one; it changes one line per file so the library keeps its tables apart from Explorer's (the script's header says how). If you also have FarstriderLib installed as an addon, the newest copy is the one that runs.
+
+Flight paths are used only between flight masters your character knows, and the game only says which those are while a flight master's map is open. Open one on each continent once.
+
+Walking legs are straight lines. The route does not know about cliffs or walls.
 
 ## Install
 

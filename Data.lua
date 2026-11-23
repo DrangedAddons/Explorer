@@ -605,3 +605,49 @@ NS.Zones = {
   {854, 1449, 623, 622, 624, 625, 621, 627, 626}, -- Explore Un'Goro Crater (Un'Goro Crater)
   {857, 1452, 1004, 1003, 1009, 1008, 1007, 1001, 1002, 1006, 1011, 1013, 1012, 1005, 1010}, -- Explore Winterspring (Winterspring)
 }
+
+-- [uiMapID] = the zone's level: the middle one of its areas' exploration levels (the game's
+-- AreaTable). Zones the table has no levels for (Mount Hyjal, Shen'dralas) are left out.
+NS.ZoneLevels = {
+  [1416] = 33, -- Alterac Mountains
+  [1417] = 33, -- Arathi Highlands
+  [1418] = 39, -- Badlands
+  [1419] = 50, -- Blasted Lands
+  [1428] = 55, -- Burning Steppes
+  [1430] = 57, -- Deadwind Pass
+  [1426] = 7, -- Dun Morogh
+  [1431] = 25, -- Duskwood
+  [1423] = 56, -- Eastern Plaguelands
+  [1429] = 8, -- Elwynn Forest
+  [1424] = 27, -- Hillsbrad Foothills
+  [1425] = 46, -- The Hinterlands
+  [1432] = 13, -- Loch Modan
+  [1433] = 20, -- Redridge Mountains
+  [2548] = 38, -- Riverglades
+  [1427] = 47, -- Searing Gorge
+  [1421] = 15, -- Silverpine Forest
+  [1434] = 40, -- Stranglethorn Vale
+  [1435] = 37, -- Swamp of Sorrows
+  [1420] = 7, -- Tirisfal Glades
+  [1422] = 55, -- Western Plaguelands
+  [1436] = 15, -- Westfall
+  [1437] = 24, -- Wetlands
+  [1440] = 23, -- Ashenvale
+  [1447] = 51, -- Azshara
+  [1413] = 15, -- The Barrens
+  [1439] = 15, -- Darkshore
+  [1443] = 32, -- Desolace
+  [1411] = 8, -- Durotar
+  [1445] = 38, -- Dustwallow Marsh
+  [1448] = 51, -- Felwood
+  [1444] = 44, -- Feralas
+  [1450] = 15, -- Moonglade
+  [1412] = 7, -- Mulgore
+  [1451] = 55, -- Silithus
+  [1442] = 20, -- Stonetalon Mountains
+  [1446] = 47, -- Tanaris
+  [1438] = 8, -- Teldrassil
+  [1441] = 27, -- Thousand Needles
+  [1449] = 51, -- Un'Goro Crater
+  [1452] = 56, -- Winterspring
+}

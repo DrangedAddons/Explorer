@@ -20,6 +20,10 @@ local DEFAULTS = {
     hoverLine = true,       -- "Explored 7/9" under a zone's name on the map
     announce = true,        -- chat line when an area gets its tick
     popup = true,           -- banner on screen when an area gets its tick (Toast.lua)
+    route = true,           -- plan an order to visit what's left in (Route.lua); numbers the pins
+    arrow = true,           -- the on-screen arrow to the route's next stop (Arrow.lua)
+    routeScope = "all",     -- what the route covers: this "zone", this "continent" or "all"
+    routeAllLevels = false, -- route through zones well above your level too
     size = 24,              -- pin size on a zone map
     theme = "auto",
 }
@@ -39,6 +43,7 @@ end
 local progress
 local dirty = true
 local seen = {}   -- [overlay] = done at the last scan, to spot new ticks
+local byOverlay = {}   -- [overlay] = its area in the last scan
 
 local function ZoneName(z)
     local info = C_Map.GetMapInfo(z[2])
@@ -80,7 +85,7 @@ end
 
 local function Scan()
     local first = next(seen) == nil
-    local out = {}
+    local out, index = {}, {}
     for _, z in ipairs(NS.Zones) do
         local ok, zone = pcall(ScanZone, z)
         if ok then
@@ -95,16 +100,31 @@ local function Scan()
                     end
                 end
                 seen[a.overlay] = a.done
+                index[a.overlay] = a
             end
         end
     end
-    progress, dirty = out, false
+    progress, dirty, byOverlay = out, false, index
     return out
 end
 
 function NS.Progress()
     if dirty or not progress then return Scan() end
     return progress
+end
+
+-- The last scan as it stands, without asking the game again (the route looks every second).
+function NS.LastProgress()
+    return progress or Scan()
+end
+
+-- Whether the game has been asked yet. The first scan is the baseline new ticks are told from,
+-- so nothing else should bring it forward.
+function NS.Scanned() return progress ~= nil end
+
+function NS.AreaByOverlay(overlay)
+    if not progress then Scan() end
+    return byOverlay[overlay]
 end
 
 -- Areas ticked and areas in total, plus how many challenges the game gave no criteria for.
@@ -252,12 +272,15 @@ local function PinEnter(self)
     GameTooltip:AddLine(a.name, 1, 0.82, 0)
     GameTooltip:AddDoubleLine(a.zone.name, a.zone.done .. "/" .. a.zone.total .. " explored", 1, 1, 1, 1, 1, 1)
     GameTooltip:AddLine(("Not explored yet (%.1f, %.1f)"):format(a.x, a.y), 0.7, 0.7, 0.7)
+    if self.numHolder and self.numHolder:IsShown() then
+        GameTooltip:AddLine(self.isNext and "Next stop on the route" or ("Stop %s on the route"):format(tostring(self.num:GetText())), 0.3, 1, 0.3)
+    end
     GameTooltip:AddLine("|cffffd100Click|r to set a waypoint here", 1, 1, 1)
     GameTooltip:Show()
 end
 
 local function PinLeave(self)
-    self.ring:SetVertexColor(1, 0.82, 0)
+    if self.isNext then self.ring:SetVertexColor(0.3, 1, 0.3) else self.ring:SetVertexColor(1, 0.82, 0) end
     self:SetAlpha(self.style == "faint" and FAINT_ALPHA or 1)
     GameTooltip:Hide()
 end
@@ -425,8 +448,7 @@ local function PlaceStitched(api, mapID, w, h, scale, playerMap)
     end
 end
 
-function NS.RefreshPins()
-    if not layer then return end
+local function PlacePins()
     for i = 1, used do pins[i]:Hide(); pins[i].area = nil end
     used = 0
     if not layer:IsVisible() then return end
@@ -471,6 +493,78 @@ function NS.RefreshPins()
             end
         end
     end
+end
+
+-- The route on the map: each full pin gets its number in its zone's path, a line joins a
+-- zone's stops in order, and the stop the arrow points at has a green ring.
+local lines, linesUsed = {}, 0
+local pinsStale = false
+
+function NS.PinsStale() pinsStale = true end
+
+local function Number(p)
+    local holder = CreateFrame("Frame", nil, p)
+    holder:SetSize(15, 15)
+    holder:SetPoint("CENTER", p, "BOTTOMRIGHT", 0, 0)
+    local bg = holder:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetTexture(CIRCLE)
+    bg:SetVertexColor(0, 0, 0, 0.9)
+    p.num = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    p.num:SetPoint("CENTER", 0, 0)
+    p.numHolder = holder
+end
+
+local function DrawRoute()
+    for i = 1, linesUsed do lines[i]:Hide() end
+    linesUsed = 0
+    local R = NS.Route
+    local on = db.route and R and R.Index
+    local scale = shownScale or 1
+    local zones = {}
+    for i = 1, used do
+        local p = pins[i]
+        local zi, si
+        if on and p.style == "pin" and p.area then zi, si = R.Index(p.area.overlay) end
+        p.isNext = zi == 1 and si == 1
+        if p.isNext then p.ring:SetVertexColor(0.3, 1, 0.3) else p.ring:SetVertexColor(1, 0.82, 0) end
+        if si then
+            if not p.num then Number(p) end
+            p.numHolder:SetScale(1 / scale)   -- the canvas is zoomed; this keeps the number one size
+            p.num:SetText(si)
+            p.numHolder:Show()
+            zones[zi] = zones[zi] or {}
+            zones[zi][si] = p
+        elseif p.numHolder then
+            p.numHolder:Hide()
+        end
+    end
+    if not layer.CreateLine then return end
+    for _, stops in pairs(zones) do
+        for si, p in pairs(stops) do
+            local q = stops[si + 1]
+            if q then
+                linesUsed = linesUsed + 1
+                local l = lines[linesUsed]
+                if not l then
+                    l = layer:CreateLine(nil, "ARTWORK")
+                    l:SetColorTexture(1, 0.82, 0, 0.5)
+                    lines[linesUsed] = l
+                end
+                l:SetThickness(2 / scale)
+                l:SetStartPoint("CENTER", p)
+                l:SetEndPoint("CENTER", q)
+                l:Show()
+            end
+        end
+    end
+end
+
+function NS.RefreshPins()
+    if not layer then return end
+    pinsStale = false
+    PlacePins()
+    pcall(DrawRoute)
 end
 
 ---------------------------------------------------------
@@ -561,7 +655,7 @@ local function BuildLayer()
         since = since + elapsed
         if since < 0.1 then return end
         since = 0
-        local stale = dirty or WorldMapFrame:GetMapID() ~= shownMap or c:GetWidth() ~= shownWidth
+        local stale = dirty or pinsStale or WorldMapFrame:GetMapID() ~= shownMap or c:GetWidth() ~= shownWidth
             or (Stitched() ~= nil) ~= shownStitched or PlayerMap() ~= shownPlayerMap
             or (wantLevel and self:GetFrameLevel() ~= wantLevel and not InCombatLockdown())
         if not stale and shownScrollX then
@@ -592,6 +686,7 @@ local function RescanSoon(delay)
         rescan = false
         dirty = true
         Scan()
+        if NS.Route then pcall(NS.Route.OnProgress) end
         NS.RefreshPins()
         if NS.UI and NS.UI.RefreshAll and ExplorerFrame and ExplorerFrame:IsVisible() then
             NS.UI.RefreshAll()
@@ -652,6 +747,25 @@ local function PrintZones()
     end
 end
 
+local function PrintRoute()
+    local order, done = NS.Route.Order()
+    if not order or #order == 0 then
+        NS.Print(done and "Nothing left for the route (see \"Route covers\" and the level setting in /ep)."
+            or "No route yet: it needs to know where you are.")
+        return
+    end
+    for i, e in ipairs(order) do
+        if i > 8 then
+            NS.Print(("  ... and %d more zones"):format(#order - 8))
+            break
+        end
+        local a = NS.AreaByOverlay(e.stops[1])
+        NS.Print(("  %d. %s: %d stops%s"):format(i, a and a.zone.name or "?", #e.stops,
+            i == 1 and a and (", first " .. a.name) or ""))
+    end
+    if not done then NS.Print("  (still working out the zones after these)") end
+end
+
 SLASH_EXPLORER1 = "/explorer"
 SLASH_EXPLORER2 = "/ep"
 SlashCmdList.EXPLORER = function(msg)
@@ -674,10 +788,29 @@ SlashCmdList.EXPLORER = function(msg)
         PrintZones()
     elseif cmd == "test" then
         if NS.ToastSample then NS.ToastSample() end
+    elseif cmd == "route" then
+        db.route = true
+        NS.Route.Replan()
+        PrintRoute()
+        if NS.UI and NS.UI.RefreshAll then NS.UI.RefreshAll() end
+    elseif cmd == "skip" then
+        local stop = NS.Route.Skip()
+        if stop then
+            NS.Print(("Skipped %s. |cffffd100/ep route|r brings skipped stops back."):format(stop.name))
+        else
+            NS.Print("The route has no stop to skip.")
+        end
+    elseif cmd == "arrow" then
+        db.arrow = not db.arrow
+        NS.Print(db.arrow and "Arrow on." or "Arrow off.")
+        if NS.UI and NS.UI.RefreshAll then NS.UI.RefreshAll() end
     else
         NS.Print("/ep - open the window")
         NS.Print("/ep next - waypoint on the nearest unexplored area of this zone")
         NS.Print("/ep list - what's left, zone by zone")
+        NS.Print("/ep route - plan the route again from where you stand, and print it")
+        NS.Print("/ep skip - pass over the stop the arrow points at")
+        NS.Print("/ep arrow - show or hide the arrow")
         NS.Print("/ep test - show a sample of the \"area explored\" popup (drag it to move it)")
     end
 end

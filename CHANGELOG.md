@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+Explorer now plans a route through everything you have left and points the way.
+
+- **Route.** The areas left in your zone are ordered into a short path from where you stand. After that come the other zones, each time the one that is quickest to reach from the last, counting the flight paths you know, boats, zeppelins and the Deeprun Tram. Walk into another zone that has areas left and it moves to the front.
+- **Arrow.** An arrow on screen points at the next stop and turns as you turn: green when you face it, red when it's behind you. Under it are the stop's name, the distance and the time at your current speed. When the stop is in another zone it points at the first thing to do on the way, such as "Talk to the Flightmaster to travel to Refuge Pointe". Click the arrow to set a waypoint on the stop, right-click to skip the stop, drag to move it, scroll on it to resize it.
+- **On the map.** Pins are numbered in route order, a line joins a zone's stops, and the next stop has a green ring.
+- **Settings.** "Route covers" picks the zone you're in, this continent, or everything. Zones more than 5 levels above you are left out unless you turn that off. The route and the arrow each have a switch. The window is now two columns, and lists the zones in route order.
+- **Commands.** `/ep route` plans again from where you stand and prints the route. `/ep skip` passes over the current stop. `/ep arrow` shows or hides the arrow.
+- **Nothing else to install.** The travel planning is done by FarstriderLib (by Savi and Deathwing), which now ships inside Explorer. Flight paths are only used once you've opened a flight master's map, because that is the only time the game says which ones you know.
+
+Walking legs are straight lines: the route doesn't know about cliffs or walls between two stops.
+
 ## 0.5.1
 
 - Eastern Plaguelands: all 22 pins were in the wrong places. Forever redrew this zone's map to a wider area (it now runs out to New Avalon), but the game's data still listed the areas at their spots on the old map. The pins are now worked out for the new map.

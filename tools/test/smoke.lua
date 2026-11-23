@@ -65,7 +65,41 @@ C_Map = {
 UiMapPoint = { CreateFromCoordinates = function(map, x, y) return { map = map, x = x, y = y } end }
 C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
 
-ns = LoadAddon(ADDON_DIR, "Explorer", { "Theme.lua", "Widgets.lua", "Window.lua", "Data.lua", "Core.lua", "Toast.lua", "UI.lua" })
+-- The world: every zone map is 1500 yards across and 1000 down, laid out on a grid by its ID.
+-- World x runs north and world y west, as in game.
+local function MapOrigin(map) return -math.floor(map / 7) % 7 * 1100, -(map % 7) * 1600 end
+function CreateVector2D(x, y) return { x = x, y = y, GetXY = function(self) return self.x, self.y end } end
+C_Map.GetWorldPosFromMapPos = function(map, v)
+    local bx, by = MapOrigin(map)
+    return 0, CreateVector2D(bx - v.y * 1000, by - v.x * 1500)
+end
+local facing, level, now, onTaxi = 0, 60, 100, false
+function GetPlayerFacing() return facing end
+function UnitLevel() return level end
+function UnitOnTaxi() return onTaxi end
+function GetUnitSpeed() return 7 end
+function GetTime() return now end
+function debugprofilestop() return 0 end
+-- The pathfinder: a tenth of a second a yard, and a flight to anywhere outside the zone you're in.
+local trails, trailsTo = 0, 0
+local function Yards(m1, x1, y1, m2, x2, y2)
+    local a, b = select(2, C_Map.GetWorldPosFromMapPos(m1, CreateVector2D(x1, y1))), select(2, C_Map.GetWorldPosFromMapPos(m2, CreateVector2D(x2, y2)))
+    return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+end
+FarstriderLib_API = {
+    FindTrail = function(m1, x1, y1, _, m2, x2, y2)
+        trails = trails + 1
+        return {}, {}, { { cost = Yards(m1, x1, y1, m2, x2, y2) / 10 } }
+    end,
+    FindTrailTo = function(map, x, y)
+        trailsTo = trailsTo + 1
+        local goal = { loc = { mapId = map, pos = { x = x, y = y } }, loca = "Reach the destination" }
+        if map == player.map then return { goal }, {}, {} end
+        return { { loc = { mapId = player.map, pos = { x = 0.9, y = 0.9 } }, loca = "Talk to the Flightmaster to travel to Testville" }, goal }, {}, {}
+    end,
+}
+
+ns = LoadAddon(ADDON_DIR, "Explorer", { "Theme.lua", "Widgets.lua", "Window.lua", "Data.lua", "Core.lua", "Route.lua", "Toast.lua", "Arrow.lua", "UI.lua" })
 FireEvent("ADDON_LOADED", "Explorer")
 FireEvent("PLAYER_LOGIN")
 FlushTimers()
@@ -348,6 +382,153 @@ for _, mode in ipairs({ "name", "bare" }) do
     n = Pins()
     done, total = ns.Totals()
     Check(n == 13 and done == 5 and total == 549, "criteria matched by " .. mode .. ": 13 pins, 5 of 549")
+end
+
+-- The route: the zone you're in first, its stops in a short path from where you stand.
+MODE = "asset"
+FireEvent("ACHIEVEMENT_EARNED")
+do
+    local R = ns.Route
+    local function Plan()
+        R.Replan()
+        for _ = 1, 2000 do R.Step() end
+        return R.Order()
+    end
+    player.map, player.x, player.y = 1416, 0.47, 0.20
+    local order, done = Plan()
+    local stop = R.Next()
+    Check(stop and stop.name == "Dandred's Fold", "route starts at the nearest area: " .. tostring(stop and stop.name))
+    local stops, zonesSeen, twice = 0, {}, 0
+    for _, e in ipairs(order) do
+        if zonesSeen[e.id] then twice = twice + 1 end
+        zonesSeen[e.id] = true
+        stops = stops + #e.stops
+    end
+    local open = 0   -- zones with areas left (the tests above finished one)
+    for _, zone in ipairs(ns.Progress()) do
+        if zone.done < zone.total then open = open + 1 end
+    end
+    Check(done and order[1].map == 1416 and #order == open and open >= 42 and twice == 0 and stops == 544,
+        "route covers every zone once, yours first: " .. #order .. " zones, " .. stops .. " stops")
+    Check(trails > 0 and trails < 43 * 42 / 2, "zone order asked the pathfinder, but not for every pair (" .. trails .. " lookups)")
+    do
+        -- the path through the zone: no shorter one by swapping the order of two neighbours
+        local e, len = order[1], 0
+        local prev = { x = 47, y = 20 }
+        for _, o in ipairs(e.stops) do
+            local a = ns.AreaByOverlay(o)
+            len = len + math.sqrt(((a.x - prev.x) * 1.5) ^ 2 + (a.y - prev.y) ^ 2)
+            prev = a
+        end
+        Check(#e.stops == 13 and len < 330, ("your zone's 13 stops in a %.0f-point path"):format(len))
+    end
+
+    -- On the map: numbers, a line between stops, the next one marked.
+    viewed = 1416
+    Tick()
+    local numbered, nextPin, bad = 0, nil, 0
+    for _, p in ipairs(select(3, Pins())) do
+        if p.numHolder and p.numHolder:IsShown() then
+            numbered = numbered + 1
+            local _, si = R.Index(p.area.overlay)
+            if tostring(p.num:GetText()) ~= tostring(si) then bad = bad + 1 end
+        end
+        if p.isNext then nextPin = p end
+    end
+    local lineCount = 0
+    for _, r in ipairs({ layer:GetRegions() }) do
+        if r:GetObjectType() == "Line" and r:IsShown() then lineCount = lineCount + 1 end
+    end
+    Check(numbered == 13 and bad == 0 and lineCount == 12, "map: 13 numbered pins joined by 12 lines")
+    Check(nextPin and nextPin.area.overlay == stop.overlay, "map: the next stop's pin is marked")
+
+    -- The arrow: at the stop, turned by the bearing less the way you face.
+    facing = 0.5
+    ns.Route.Tick()
+    ns.RefreshArrow()
+    local arrow = ExplorerArrow
+    local north, west = -(stop.y / 100 - 0.20) * 1000, -(stop.x / 100 - 0.47) * 1500
+    Check(arrow and arrow:IsShown() and arrow.title:GetText() == "Dandred's Fold", "arrow names the next stop")
+    Check(arrow.turn and math.abs(arrow.turn - (math.atan2(west, north) - 0.5)) < 1e-6, "arrow turns to the stop's bearing")
+    Check(arrow.dist:GetText():find(("%d yd"):format(math.sqrt(north ^ 2 + west ^ 2))), "arrow gives the distance: " .. arrow.dist:GetText())
+    Check(arrow.sub:GetText() == "Zone 1416  2/15", "arrow's last line is the zone's count")
+    waypoint = nil
+    arrow:Click("LeftButton")
+    Check(waypoint and waypoint.map == 1416, "clicking the arrow sets a waypoint on the stop")
+
+    -- An area ticks: the route moves on.
+    doneSet[stop.overlay] = true
+    FireEvent("ZONE_CHANGED")
+    FlushTimers()
+    local after = R.Next()
+    Check(after and after.overlay ~= stop.overlay and #select(1, R.Order())[1].stops == 12, "a tick moves the route to the next stop")
+    arrow:Click("RightButton")
+    Check(R.Next().overlay ~= after.overlay and #select(1, R.Order())[1].stops == 11, "right-clicking the arrow skips a stop")
+
+    -- Out of the zone (a city, nothing to explore there): the way back is a travel leg.
+    player.map, player.x, player.y = 1453, 0.5, 0.5
+    now = now + 10
+    R.Tick()
+    ns.RefreshArrow()
+    local g = R.Guide()
+    Check(g and g.leg and trailsTo == 1 and arrow.title:GetText() == "Talk to the Flightmaster to travel to Testville",
+        "another zone's stop: the arrow shows the first leg of the trip")
+    Check(arrow.sub:GetText():find("^to .+, Zone 1416$"), "and where the trip ends: " .. arrow.sub:GetText())
+    R.Tick()
+    Check(trailsTo == 1, "the leg isn't looked up again within three seconds")
+    onTaxi = true
+    ns.RefreshArrow()
+    Check(arrow.title:GetText() == "In flight" and not arrow.tex:IsShown(), "on a flight: no arrow, just where you're going")
+    onTaxi = false
+
+    -- Walking into another zone with stops puts it first.
+    player.map, player.x, player.y = 1417, 0.5, 0.5
+    R.Tick()
+    for _ = 1, 2000 do R.Step() end
+    Check(select(1, R.Order())[1].map == 1417 and R.Next().map == 1417, "walking into another zone puts its stops first")
+
+    -- Settings: what the route covers, and zones above your level.
+    player.map, player.x, player.y = 1416, 0.47, 0.20
+    ns.db.routeScope = "zone"
+    order = Plan()
+    Check(#order == 1 and order[1].map == 1416, "'The zone I'm in': one zone")
+    ns.db.routeScope = "all"
+    level = 20
+    order = Plan()
+    local want, high = 0, 0
+    for _, zone in ipairs(ns.Progress()) do
+        if zone.done < zone.total then
+            local zl = ns.ZoneLevels[zone.map]
+            if zone.map == 1416 or not zl or zl <= 25 then want = want + 1 else high = high + 1 end
+        end
+    end
+    Check(#order == want and high > 10 and order[1].map == 1416, "level 20: " .. high .. " zones above level 25 left out, your own zone kept")
+    ns.db.routeAllLevels = true
+    Check(#Plan() == open, "'Leave out zones above me' off: all of them")
+    ns.db.routeAllLevels = false
+    level = 60
+
+    -- The window lists the route's zones in order.
+    Plan()
+    SlashCmdList.EXPLORER("")
+    Check(ExplorerFrame:IsShown(), "window opens with a route")
+    ExplorerFrame:Hide()
+    PRINTED = {}
+    SlashCmdList.EXPLORER("route")
+    Check(Printed("1%. Zone 1416: 12 stops, first "), "/ep route prints the plan")
+    ns.db.arrow = false
+    ns.RefreshArrow()
+    Check(not arrow:IsShown(), "arrow setting off: hidden")
+    ns.db.arrow = true
+    ns.db.route = false
+    R.Tick()
+    Tick()
+    numbered = 0
+    for _, p in ipairs(select(3, Pins())) do
+        if p.numHolder and p.numHolder:IsShown() then numbered = numbered + 1 end
+    end
+    Check(R.Next() == nil and numbered == 0, "route setting off: no route, no numbers")
+    ns.db.route = true
 end
 
 -- The sample popup: takes the mouse, drags, resizes, resets.

@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: Explorer
-## Notes: World map pins on every area you still have to visit for the Legacy "Explore" challenges.
+## Notes: Map pins, a route and an arrow for every area you still have to visit for the Legacy "Explore" challenges.
 ## Author: Dranged
-## Version: 0.5.1
+## Version: 0.6.0
 ## OptionalDeps: EllesmereUI, WaypointUI, OpenMap
 ## X-DrangedAddons-Games: _forever_
 ## X-DrangedHub-Frame: ExplorerFrame
@@ -11,15 +11,21 @@
 ## IconTexture: Interface\AddOns\Explorer\icon
 ## AddonCompartmentFunc: Explorer_OnCompartmentClick
 ## SavedVariables: ExplorerDB
+## SavedVariablesPerCharacter: FarstriderLibData_CharacterSettings
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
 Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+Libs\Farstrider.lua
+Libs\FarstriderLibData\FarstriderLibData_Camelot.xml
+Libs\FarstriderLib\FarstriderLib.xml
 Theme.lua
 Widgets.lua
 Window.lua
 Data.lua
 Core.lua
+Route.lua
 Toast.lua
+Arrow.lua
 UI.lua
