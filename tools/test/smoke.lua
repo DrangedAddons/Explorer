@@ -72,8 +72,10 @@ C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
 local function MapOrigin(map) return -math.floor(map / 7) % 7 * 1100, -(map % 7) * 1600 end
 function CreateVector2D(x, y) return { x = x, y = y, GetXY = function(self) return self.x, self.y end } end
 local function EPL(x, y) return 3691.67 + y * (825 - 3691.67), -2256.25 + x * (-6558.33 + 2256.25) end
+local function HYJAL(x, y) return 6304.17 + y * (3989.58 - 6304.17), -922.92 + x * (-4395.83 + 922.92) end
 C_Map.GetWorldPosFromMapPos = function(map, v)
     if map == 1423 then return 0, CreateVector2D(EPL(v.x, v.y)) end
+    if map == 2482 then return 1, CreateVector2D(HYJAL(v.x, v.y)) end
     local bx, by = MapOrigin(map)
     return 99, CreateVector2D(bx - v.y * 1000, by - v.x * 1500)
 end
@@ -86,6 +88,7 @@ function GetTime() return now end
 function debugprofilestop() return 0 end
 -- The pathfinder: a tenth of a second a yard, and a flight to anywhere outside the zone you're in.
 local trails, trailsTo = 0, 0
+local flyInZone = false   -- the pathfinder offers a flight inside the zone you're in
 local function Yards(m1, x1, y1, m2, x2, y2)
     local a, b = select(2, C_Map.GetWorldPosFromMapPos(m1, CreateVector2D(x1, y1))), select(2, C_Map.GetWorldPosFromMapPos(m2, CreateVector2D(x2, y2)))
     return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
@@ -98,13 +101,14 @@ FarstriderLib_API = {
     FindTrailTo = function(map, x, y)
         trailsTo = trailsTo + 1
         local goal = { loc = { mapId = map, pos = { x = x, y = y } }, loca = "Reach the destination" }
-        if map == player.map then return { goal }, {}, {} end
-        return { { loc = { mapId = player.map, pos = { x = 0.9, y = 0.9 } }, loca = "Talk to the Flightmaster to travel to Testville" }, goal }, {}, {}
+        if map == player.map and not flyInZone then return { goal }, {}, {} end
+        return { { loc = { mapId = player.map, pos = { x = 0.9, y = 0.9 } }, loca = "Talk to the Flightmaster to travel to Testville" }, goal },
+            {}, { { cost = flyInZone or 60, locaId = 1001 } }
     end,
 }
 
 ns = LoadAddon(ADDON_DIR, "Explorer", { "Theme.lua", "Widgets.lua", "Window.lua", "Data.lua", "Core.lua",
-    "Nav/Terrain.lua", "Nav/Roads.lua", "Nav.lua", "Route.lua", "Toast.lua", "Arrow.lua", "UI.lua" })
+    "Nav/Terrain.lua", "Nav/Roads.lua", "Nav/Shapes.lua", "Nav.lua", "Route.lua", "Toast.lua", "Arrow.lua", "UI.lua" })
 FireEvent("ADDON_LOADED", "Explorer")
 FireEvent("PLAYER_LOGIN")
 FlushTimers()
@@ -589,11 +593,13 @@ do
         -- the walk along the order, against the straight-line order's walk
         local function PathLen(stops)
             local total, px, py = 0, EPL(0.52, 0.596)
+            local onto
             for _, o in ipairs(stops) do
                 local a = ns.AreaByOverlay(o)
                 local ax, ay = EPL(a.x / 100, a.y / 100)
-                total = total + (Nav.From(0, px, py).Walk(ax, ay) or 0)
-                px, py = ax, ay
+                local off = Nav.Approach(0, o)
+                total = total + (Nav.From(0, px, py, onto).Walk(ax, ay, off) or 0)
+                px, py, onto = ax, ay, off
             end
             return total
         end
@@ -621,6 +627,7 @@ do
     for _ = 1, 8 do
         if g.way and g.way.points then break end
         R.Skip()
+        for _ = 1, 500 do R.Step() end
         g = R.Guide()
     end
     ns.RefreshArrow()
@@ -645,6 +652,88 @@ do
     viewed = 1416
     R.Replan()
     for _ = 1, 3000 do R.Step() end
+end
+
+-- Mount Hyjal, as it was reported: three stops left, the player in the Tainted Foothills, and
+-- the route drawn straight through the cliffs between a handful of road junctions.
+do
+    local R, Nav = ns.Route, ns.Nav
+    local function Pump() for _ = 1, 4000 do R.Step() end end
+    for _, o in ipairs({ 4988, 4989, 4991, 4993, 4995, 4996 }) do doneSet[o] = true end
+    FireEvent("ZONE_CHANGED")
+    FlushTimers()
+    player.map, player.x, player.y = 2482, 0.686, 0.692
+    R.Replan()
+    Pump()
+    R.Tick()
+    Pump()
+    local e = R.Order()[1]
+    Check(e.map == 2482 and #e.stops == 3, "Mount Hyjal: its three stops come first")
+
+    -- how much of a line through these world points lies over ground the data has blocked
+    local function Blocked(points, fx, fy, tx, ty)
+        local line = { { fx, fy } }
+        for i = 1, #points - 1, 2 do line[#line + 1] = { points[i], points[i + 1] } end
+        line[#line + 1] = { tx, ty }
+        local total, bad = 0, 0
+        for i = 2, #line do
+            local a, b = line[i - 1], line[i]
+            local d = math.sqrt((a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2)
+            total = total + d
+            if not Nav.Segment(1, a[1], a[2], b[1], b[2]) then bad = bad + d end
+        end
+        return bad, total, #line - 1
+    end
+    local px, py = HYJAL(0.686, 0.692)
+    local worst, legs = 0, 0
+    for _, overlay in ipairs({ 4994, 4992, 4990 }) do
+        local a = ns.Areas[overlay]
+        local tx, ty = HYJAL(a[2] / 100, a[3] / 100)
+        local onto = Nav.Reach(1, px, py)
+        local yards, how, points = Nav.From(1, px, py, #onto > 0 and onto or nil).Path(tx, ty, Nav.Approach(1, overlay))
+        if yards and how == "road" then
+            legs = legs + 1
+            local bad, total = Blocked(points, px, py, tx, ty)
+            worst = math.max(worst, bad / total)
+        end
+    end
+    Check(legs == 3 and worst < 0.12, ("Mount Hyjal: all three stops have a way by road, at most %d%% of one over blocked ground"):format(worst * 100))
+    do
+        -- the same walk as the junction-to-junction data alone gives it: through the cliffs
+        local a = ns.Areas[4992]
+        local tx, ty = HYJAL(a[2] / 100, a[3] / 100)
+        local shapes, approach = ns.Shapes, ns.Approach
+        ns.Shapes, ns.Approach = nil, nil
+        local _, _, points = Nav.From(1, px, py).Path(tx, ty)
+        ns.Shapes, ns.Approach = shapes, approach
+        local bad, total = Blocked(points, px, py, tx, ty)
+        Check(bad / total > 0.5, ("(without the roads' shapes %d%% of that walk is over blocked ground)"):format(bad / total * 100))
+    end
+
+    local g = R.Guide()
+    Check(g and g.way and g.way.points and #g.way.points >= 12, "the guide's way to the next stop follows the ground: " .. (g.way and g.way.points and #g.way.points / 2 or 0) .. " points")
+    ns.RefreshArrow()
+    Check(ExplorerArrow.dist:GetText():find("by road"), "arrow: " .. ExplorerArrow.dist:GetText())
+
+    -- A flight inside the zone: taken for a long walk when it's clearly quicker, not otherwise.
+    flyInZone = 30
+    now = now + 10
+    R.Tick()
+    Pump()
+    ns.RefreshArrow()
+    g = R.Guide()
+    Check(g.leg ~= nil and ExplorerArrow.title:GetText() == "Talk to the Flightmaster to travel to Testville",
+        "a long walk inside the zone: the arrow sends you to the flight master when the flight is much quicker")
+    flyInZone = 100000
+    now = now + 10
+    R.Tick()
+    Pump()
+    Check(R.Guide().leg == nil, "and keeps you walking when it isn't")
+    flyInZone = false
+
+    player.map, player.x, player.y = 1416, 0.47, 0.20
+    R.Replan()
+    Pump()
 end
 
 -- The sample popup: takes the mouse, drags, resizes, resets.

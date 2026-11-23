@@ -29,6 +29,8 @@ local LEG_EVERY = 3         -- seconds between travel lookups for the same stop
 local ON_FOOT = 1000        -- FarstriderLib's kind of step for going on foot
 local UNREACHED = 1.5       -- no way found on foot: the bird's distance and half again
 local WAY_EVERY, WAY_MOVED = 5, 25   -- the walk to the next stop is found again after this many seconds or yards
+local FLY_FROM = 1200       -- yards of walking inside a zone from which a flight is weighed against it
+local FLY_BEATS = 0.8       -- ... and taken when it needs under this much of the walk's time
 
 local Route = {}
 NS.Route = Route
@@ -292,6 +294,7 @@ end
 -- every scan makes new area tables.
 local plan, builder
 local refiner        -- a coroutine putting the zone you're in into walking order
+local wayfinder      -- a coroutine finding the walk from the player to the next stop
 local stale = true
 local version = 0
 local times = {}     -- ["from>to"] = seconds between two zones' middles
@@ -407,7 +410,9 @@ local function Refine(e)
     if not Nav or pm ~= e.map then return end
     local inst, wx, wy = NS.WorldPos(pm, px, py)
     if not (inst and Nav.Knows(inst)) then return end
-    local areas, pts = {}, { [0] = { wx, wy } }
+    -- onto[i]: the ways onto the roads from stop i, worked out ahead for every pin; for the
+    -- player (0) a search over the ground, when no straight line gets them to a junction
+    local areas, pts, onto = {}, { [0] = { wx, wy } }, {}
     for _, overlay in ipairs(e.stops) do
         local a = NS.AreaByOverlay(overlay)
         local ai, ax, ay
@@ -415,17 +420,22 @@ local function Refine(e)
         if ai ~= inst then return end
         areas[#areas + 1] = a
         pts[#areas] = { ax, ay }
+        onto[#areas] = Nav.Approach(inst, overlay)
     end
     local n = #areas
     if n < 2 then return end
+    if not Nav.OnRoads(inst, wx, wy) then
+        local ways = Nav.Reach(inst, wx, wy, coroutine.yield)
+        if #ways > 0 then onto[0] = ways end
+    end
 
     local from, D = {}, {}
     for i = 0, n do D[i] = {} end
     for i = 0, n - 1 do
         coroutine.yield()
-        from[i] = Nav.From(inst, pts[i][1], pts[i][2])
+        from[i] = Nav.From(inst, pts[i][1], pts[i][2], onto[i])
         for j = i + 1, n do
-            local d = from[i].Walk(pts[j][1], pts[j][2])
+            local d = from[i].Walk(pts[j][1], pts[j][2], onto[j])
             if not d then
                 d = math.sqrt((pts[i][1] - pts[j][1]) ^ 2 + (pts[i][2] - pts[j][2]) ^ 2) * UNREACHED
             end
@@ -438,8 +448,8 @@ local function Refine(e)
     for k = 2, n do
         coroutine.yield()
         local a, b = order[k - 1], order[k]
-        local ctx = from[a] or Nav.From(inst, pts[a][1], pts[a][2])
-        local yards, how, points = ctx.Path(pts[b][1], pts[b][2])
+        local ctx = from[a] or Nav.From(inst, pts[a][1], pts[a][2], onto[a])
+        local yards, how, points = ctx.Path(pts[b][1], pts[b][2], onto[b])
         if yards and how == "road" then
             ways[areas[a].overlay .. ">" .. areas[b].overlay] = { inst = inst, points = points }
         end
@@ -457,10 +467,13 @@ local function Refine(e)
 end
 
 local function Step()
-    if not builder and not refiner then return end
+    if not builder and not refiner and not wayfinder then return end
     local started = debugprofilestop and debugprofilestop() or 0
     repeat
-        if refiner then
+        if wayfinder then
+            local ok = coroutine.resume(wayfinder)
+            if not ok or coroutine.status(wayfinder) == "dead" then wayfinder = nil end
+        elseif refiner then
             local ok = coroutine.resume(refiner)
             if not ok or coroutine.status(refiner) == "dead" then refiner = nil end
         elseif builder then
@@ -482,7 +495,7 @@ end
 local function Start()
     local db = NS.db
     plan = { order = {}, done = false, scope = db.routeScope, allLevels = db.routeAllLevels, known = KnownZones() }
-    stale, refiner = false, nil
+    stale, refiner, wayfinder = false, nil, nil
     local p = plan
     builder = coroutine.create(function() Build(p) end)
     -- up to the first travel lookup: the zone you're in is ready at once
@@ -534,13 +547,24 @@ end
 local guide
 local legAt = 0
 
--- The first thing to do on the way to a stop in another zone: { map, x, y, text }, or nil
--- when it's a straight walk.
-local function Leg(stop)
+-- Yards a second on the ground at the player's level, as FarstriderLib counts it for Forever.
+local function RideSpeed()
+    local level = UnitLevel and UnitLevel("player") or 1
+    return level >= 60 and 14 or level >= 40 and 11.2 or 7
+end
+
+-- The first thing to do on a trip to a stop: { map, x, y, text }, or nil when it's a walk.
+-- `walkSeconds`: only take a trip that beats this walk clearly (a flight inside one zone).
+local function Leg(stop, walkSeconds)
     local api = FarstriderLib_API
     if type(api) ~= "table" or not api.FindTrailTo then return nil end
-    local ok, steps = pcall(api.FindTrailTo, stop.map, stop.x / 100, stop.y / 100, 0)
+    local ok, steps, _, edges = pcall(api.FindTrailTo, stop.map, stop.x / 100, stop.y / 100, 0)
     if not ok or type(steps) ~= "table" or #steps < 2 then return nil end
+    if walkSeconds then
+        local cost = 0
+        for _, e in ipairs(type(edges) == "table" and edges or {}) do cost = cost + (tonumber(e.cost) or 0) end
+        if not (cost > 0 and cost < walkSeconds * FLY_BEATS) then return nil end
+    end
     local s = steps[1]
     local loc = type(s) == "table" and s.loc
     local pos = type(loc) == "table" and loc.pos
@@ -550,9 +574,12 @@ local function Leg(stop)
 end
 
 -- The walk from the player to the stop (or to the first leg of the trip): g.way, with the
--- point to head for now when the straight line is blocked and the roads go round.
+-- points on the way and the one to head for now when the straight line is blocked. Found by
+-- a coroutine: where no straight line gets the player onto a road, the way there is searched
+-- for over the ground, which takes a few frames.
 local function UpdateWay(g, pm, px, py)
     local Nav = NS.Nav
+    local toStop = not g.leg
     local tm, tx, ty = g.stop.map, g.stop.x / 100, g.stop.y / 100
     if g.leg then tm, tx, ty = g.leg.map, g.leg.x, g.leg.y end
     local inst, wx, wy = NS.WorldPos(pm, px, py)
@@ -561,20 +588,33 @@ local function UpdateWay(g, pm, px, py)
         g.way = nil
         return
     end
+    if wayfinder then return end
     local now, w = GetTime(), g.way
     if w and w.tx == twx and w.ty == twy and now - w.at < WAY_EVERY
         and (wx - w.px) ^ 2 + (wy - w.py) ^ 2 < WAY_MOVED ^ 2
         and not (w.x and (wx - w.x) ^ 2 + (wy - w.y) ^ 2 < 20 ^ 2) then
         return
     end
-    local yards, how, points = Nav.From(inst, wx, wy).Path(twx, twy)
-    w = { at = now, px = wx, py = wy, tx = twx, ty = twy, inst = inst }
-    if yards and how == "road" then
-        w.yards, w.points = yards, points
-        w.x, w.y = Nav.Ahead(inst, wx, wy, points, twx, twy)
-    end
-    g.way = w
-    if NS.PinsStale then NS.PinsStale() end
+    local overlay = toStop and g.stop.overlay or nil
+    wayfinder = coroutine.create(function()
+        local onto
+        if not Nav.OnRoads(inst, wx, wy) then
+            local ways = Nav.Reach(inst, wx, wy, coroutine.yield)
+            if #ways > 0 then onto = ways end
+        end
+        local yards, how, points = Nav.From(inst, wx, wy, onto).Path(twx, twy, Nav.Approach(inst, overlay))
+        local new = { at = now, px = wx, py = wy, tx = twx, ty = twy, inst = inst }
+        local bird = math.sqrt((twx - wx) ^ 2 + (twy - wy) ^ 2)
+        if yards and how == "road" then
+            new.yards, new.points = yards, points
+            new.x, new.y = Nav.Ahead(inst, wx, wy, points, twx, twy)
+        end
+        if guide ~= g then return end   -- the stop changed while this ran
+        g.way = new
+        -- how much longer than the bird's distance the walk to the stop is, for weighing a flight
+        if toStop and bird > 50 then g.walkRatio = math.max(1, (yards or bird) / bird) end
+        if NS.PinsStale then NS.PinsStale() end
+    end)
 end
 
 local function UpdateGuide(pm, px, py, onTaxi)
@@ -587,14 +627,27 @@ local function UpdateGuide(pm, px, py, onTaxi)
     end
     g.stop, g.entry = stop, e
     if not pm then return end
-    if pm == stop.map then g.leg, g.legFrom = nil, nil end
-    if onTaxi or InCombatLockdown() then return end   -- what's there stands while you fly or fight
-    if pm ~= stop.map then
+    if onTaxi or InCombatLockdown() then   -- what's there stands while you fly or fight
+        g.flew = g.flew or onTaxi
+        return
+    end
+    if g.flew then g.flew, g.leg, g.legFrom = nil, nil, nil end   -- landed: look again from here
+    -- A trip (flight, boat, tram) for a stop in another zone. In the same zone only for a long
+    -- walk, and only when the flight beats walking clearly.
+    local walkSeconds
+    if pm == stop.map then
+        local bird = NS.Between(pm, px, py, stop.map, stop.x / 100, stop.y / 100)
+        local yards = bird and bird * (g.walkRatio or 1.3)
+        if yards and yards > FLY_FROM then walkSeconds = yards / RideSpeed() end
+    end
+    if pm ~= stop.map or walkSeconds then
         local now = GetTime()
         if g.legFrom ~= pm or now - legAt >= LEG_EVERY then
             legAt, g.legFrom = now, pm
-            g.leg = Leg(stop)
+            g.leg = Leg(stop, walkSeconds)
         end
+    else
+        g.leg, g.legFrom = nil, nil
     end
     UpdateWay(g, pm, px, py)
 end
@@ -728,9 +781,9 @@ frame:SetScript("OnEvent", function(_, event)
     end
 end)
 frame:SetScript("OnUpdate", function(_, elapsed)
-    if (builder or refiner) and not InCombatLockdown() then
+    if (builder or refiner or wayfinder) and not InCombatLockdown() then
         local ok = pcall(Step)
-        if not ok then builder, refiner = nil, nil end
+        if not ok then builder, refiner, wayfinder = nil, nil, nil end
     end
     since = since + elapsed
     if since < 1 then return end

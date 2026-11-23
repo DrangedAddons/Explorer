@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+Fixes the route cutting through cliffs (reported in Mount Hyjal), and adds flights inside a zone.
+
+- **Roads keep their shape.** The road data only says which junctions a road joins, so a winding mountain road was drawn, and followed, as a straight line through the mountain. Explorer now works out where each such road runs from the terrain, and follows that: 1,158 roads got their bends.
+- **Pins join the road over real ground.** The walk from each pin to the road is worked out the same way, where before it was a straight line from the nearest junction. A pin the terrain closes off (a plateau, a cave mouth) gets the way that crosses the least blocked ground, which is where the ramp or bridge is.
+- **Getting onto the road from where you stand.** When no straight line gets you to a road (in a canyon, behind a ridge), Explorer searches the ground around you for the way.
+- **The road network is joined up.** The data's roads came in separate pieces, so some stops had no route at all. The pieces are now linked, and roads that pass close to each other are joined where the ground between them is open.
+- **Flights inside a zone.** For a long walk within one zone, the arrow sends you to a flight master when flying is clearly quicker (under 80% of the walk's time) and you know both flight points.
+
 ## 0.7.0
 
 The route now goes by the ground and the roads, not as the bird flies.

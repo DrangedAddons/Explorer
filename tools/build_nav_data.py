@@ -25,6 +25,8 @@ import sys
 import urllib.request
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CURSEFORGE_PROJECT = 1712208  # AzerothGPS
 CF_FILES = "https://www.curseforge.com/api/v1/mods/%d/files?pageIndex=0&pageSize=20&sort=dateCreated&sortDescending=true"
@@ -334,6 +336,9 @@ def build(texts):
     with open(roads_path, "w", encoding="utf-8", newline="\n") as f:
         f.write("".join(out))
     print("built Nav/Terrain.lua and Nav/Roads.lua from AzerothGPS", ver)
+    # where the roads run between their junctions, and how the explore pins join them
+    import shape_nav
+    shape_nav.main()
 
 
 if __name__ == "__main__":

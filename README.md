@@ -42,9 +42,11 @@ Flight paths are used only between flight masters your character knows, and the 
 
 ## Walking
 
-Walks go by the ground: `Nav.lua` knows steep ground, water, walls and the road network, and takes a straight line where the ground allows it and the roads where it doesn't. The stop order in your zone, the arrow, the line on the map and the walks between zones all use it. Roads are stored junction to junction, so the arrow cuts the corners of a winding road.
+Walks go by the ground: `Nav.lua` knows steep ground, water, walls and the road network, and takes a straight line where the ground allows it and the roads where it doesn't. The stop order in your zone, the arrow, the line on the map and the walks between zones all use it. 
 
-The data in `Nav/` is AzerothGPS's terrain grid, walls and roads, (c) AzerothGPS, all rights reserved, used with its author's permission. `tools/build_nav_data.py` rebuilds it from the latest WoW Forever release of AzerothGPS on CurseForge. It covers the Eastern Kingdoms and Kalimdor; anywhere else a walk is a straight line.
+The data in `Nav/` is AzerothGPS's terrain grid, walls and roads, (c) AzerothGPS, all rights reserved, used with its author's permission. `tools/build_nav_data.py` rebuilds it from the latest WoW Forever release of AzerothGPS on CurseForge.
+
+AzerothGPS's roads are junctions and the length of road between each two, in several unconnected pieces. `tools/shape_nav.py` (run by the build) works out the rest from the terrain grid into `Nav/Shapes.lua`: where each road runs between its junctions when the straight line is blocked, walks that join the pieces, and the walk from every explore pin to the junctions nearest it. It covers the Eastern Kingdoms and Kalimdor; anywhere else a walk is a straight line.
 
 ## Install
 

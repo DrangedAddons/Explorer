@@ -26,6 +26,7 @@ local LOOSE_RANGE = 2000  -- with no junction in clear reach (a pin up a slope, 
 local LOOSE = 1.5         -- river): the nearest ones within this, the last stretch counted this
 local LOOSE_TRIES = 2     -- much longer than the bird's distance
 local AT_JUNCTION = 30    -- yards from a junction that count as having reached it
+local NEAR_END = 400      -- the end is tried for a straight walk first when it's this close
 
 ---------------------------------------------------------
 --  SECTION: Terrain grid (run-length rows, decoded the first time a row is read)
@@ -189,6 +190,16 @@ local function Graph(cont)
             lb[#lb + 1], lb[#lb + 2] = a, len
         end
     end
+    -- walks that join the network's separate pieces (Nav/Shapes.lua)
+    local links = NS.Links and NS.Links[cont] or {}
+    for i = 1, #links - 2, 3 do
+        local a, b, len = links[i], links[i + 1], links[i + 2]
+        if adj[a] and adj[b] and a ~= b then
+            local la, lb = adj[a], adj[b]
+            la[#la + 1], la[#la + 2] = b, len
+            lb[#lb + 1], lb[#lb + 2] = a, len
+        end
+    end
     g = { xs = xs, ys = ys, adj = adj }
     graphs[cont] = g
     return g
@@ -226,10 +237,11 @@ local function Snap(g, cont, x, y)
     return out
 end
 
--- Along the roads from (x, y): yards to every junction, and for each the junction before it
--- on the way there (Dijkstra; a few hundred to 1,500 junctions).
-local function RoadsFrom(g, cont, x, y)
-    local dist, prev, done = {}, {}, {}
+-- Along the roads from a set of ways onto them ({ node, yards, points }): yards to every
+-- junction, for each the junction before it on the way there, and for the first junction of
+-- each way the snap that led onto it (Dijkstra; a few hundred to 1,500 junctions).
+local function RoadsFrom(g, snaps)
+    local dist, prev, onto, done = {}, {}, {}, {}
     local heap = {}
     local function push(node, d)
         heap[#heap + 1] = { node, d }
@@ -258,9 +270,9 @@ local function RoadsFrom(g, cont, x, y)
         end
         return top
     end
-    for _, s in ipairs(Snap(g, cont, x, y)) do
+    for _, s in ipairs(snaps) do
         if not dist[s[1]] or s[2] < dist[s[1]] then
-            dist[s[1]] = s[2]
+            dist[s[1]], onto[s[1]] = s[2], s
             push(s[1], s[2])
         end
     end
@@ -273,60 +285,261 @@ local function RoadsFrom(g, cont, x, y)
             for i = 1, #a - 1, 2 do
                 local nb, nd = a[i], d + a[i + 1]
                 if not dist[nb] or nd < dist[nb] then
-                    dist[nb], prev[nb] = nd, node
+                    dist[nb], prev[nb], onto[nb] = nd, node, nil
                     push(nb, nd)
                 end
             end
         end
     end
-    return dist, prev
+    return dist, prev, onto
+end
+
+-- The ways onto the roads from an explore pin, worked out ahead from the terrain
+-- (Nav/Shapes.lua): { { junction, yards, points }, ... }, or nil where there are none.
+function Nav.Approach(cont, overlay)
+    local a = overlay and NS.Approach and NS.Approach[overlay]
+    if not a or a[1] ~= cont or not a[2] then return nil end
+    local out = {}
+    for i = 2, #a do out[#out + 1] = a[i] end
+    return out
+end
+
+---------------------------------------------------------
+--  SECTION: Onto the roads over the ground
+---------------------------------------------------------
+-- For a start no straight line gets to a junction from (the player in a canyon): spread out
+-- from it over open ground, cell by cell, until junctions turn up. Slow next to the rest
+-- (thousands of cells), so it's capped, and `pause` (a coroutine's yield) is called as it goes.
+local REACH_YARDS, REACH_CELLS, REACH_WANT, PAUSE_EVERY = 900, 12000, 2, 500
+
+local junctionAt = {}   -- [cont] = { [row * 65536 + col] = node }
+local wallBuckets = {}  -- [cont] = { [bx * 4096 + by] = { ax, ay, bx, by, ... } } on a 60-yard grid
+local BUCKET = 60
+
+local function CellOf(g, x, y)
+    local k = TILE / g.cell
+    return math.floor(((32 - x / TILE) - g.ty0) * k) + 1, math.floor(((32 - y / TILE) - g.tx0) * k) + 1
+end
+
+local function CentreOf(g, row, col)
+    local k = TILE / g.cell
+    return (32 - g.ty0 - (row - 0.5) / k) * TILE, (32 - g.tx0 - (col - 0.5) / k) * TILE
+end
+
+local function JunctionCells(cont, g, graph)
+    local at = junctionAt[cont]
+    if not at then
+        at = {}
+        for i = 1, #graph.xs do
+            local row, col = CellOf(g, graph.xs[i], graph.ys[i])
+            local key = row * 65536 + col
+            if not at[key] then at[key] = i end
+        end
+        junctionAt[cont] = at
+    end
+    return at
+end
+
+local function WallBuckets(cont)
+    local b = wallBuckets[cont]
+    if not b then
+        b = {}
+        for _, w in ipairs(Walls(cont)) do
+            local pts = w[1]
+            for i = 1, #pts - 3, 2 do
+                local ax, ay, bx, by = pts[i], pts[i + 1], pts[i + 2], pts[i + 3]
+                for u = math.floor(math.min(ax, bx) / BUCKET) - 1, math.floor(math.max(ax, bx) / BUCKET) + 1 do
+                    for v = math.floor(math.min(ay, by) / BUCKET) - 1, math.floor(math.max(ay, by) / BUCKET) + 1 do
+                        local key = u * 4096 + v
+                        local list = b[key]
+                        if not list then list = {}; b[key] = list end
+                        list[#list + 1], list[#list + 2], list[#list + 3], list[#list + 4] = ax, ay, bx, by
+                    end
+                end
+            end
+        end
+        wallBuckets[cont] = b
+    end
+    return b
+end
+
+-- { { junction, yards, points on the way from (x, y) }, ... }: the nearest junctions over
+-- open ground. Empty when none turn up within the caps.
+function Nav.Reach(cont, x, y, pause)
+    local g, graph = NS.Terrain and NS.Terrain[cont], Graph(cont)
+    if not (g and graph) then return {} end
+    local opens, at, buckets = Opens(cont), JunctionCells(cont, g, graph), WallBuckets(cont)
+    local walled = next(buckets) ~= nil
+    local sr, sc = CellOf(g, x, y)
+    local start = sr * 65536 + sc
+    local best, came = { [start] = 0 }, {}
+    local heap, size = { { start, 0 } }, 1
+    local found, opened, limit = {}, 0, REACH_YARDS / g.cell
+    while size > 0 and #found < REACH_WANT do
+        -- pop
+        local top = heap[1]
+        local last = heap[size]
+        heap[size] = nil
+        size = size - 1
+        if size > 0 then
+            heap[1] = last
+            local i = 1
+            while true do
+                local l, r, s = i * 2, i * 2 + 1, i
+                if l <= size and heap[l][2] < heap[s][2] then s = l end
+                if r <= size and heap[r][2] < heap[s][2] then s = r end
+                if s == i then break end
+                heap[s], heap[i] = heap[i], heap[s]
+                i = s
+            end
+        end
+        local key, d = top[1], top[2]
+        if d <= best[key] then
+            if at[key] then found[#found + 1] = { at[key], d, key } end
+            opened = opened + 1
+            if opened > REACH_CELLS or d > limit then break end
+            if pause and opened % PAUSE_EVERY == 0 then pause() end
+            local row, col = math.floor(key / 65536), key % 65536
+            local cx, cy
+            if walled then cx, cy = CentreOf(g, row, col) end
+            for dr = -1, 1 do
+                for dc = -1, 1 do
+                    if dr ~= 0 or dc ~= 0 then
+                        local nr, nc = row + dr, col + dc
+                        local v = Cell(g, opens, nr, nc)
+                        -- no cutting a blocked corner
+                        if v ~= 2 and (dr == 0 or dc == 0 or (Cell(g, opens, row, nc) ~= 2 and Cell(g, opens, nr, col) ~= 2)) then
+                            local ok = true
+                            if walled then
+                                local nx, ny = CentreOf(g, nr, nc)
+                                local list = buckets[math.floor((cx + nx) / 2 / BUCKET) * 4096 + math.floor((cy + ny) / 2 / BUCKET)]
+                                if list then
+                                    for i = 1, #list - 3, 4 do
+                                        local ax, ay, bx, by = list[i], list[i + 1], list[i + 2], list[i + 3]
+                                        local d1, d2 = Orient(cx, cy, nx, ny, ax, ay), Orient(cx, cy, nx, ny, bx, by)
+                                        local d3, d4 = Orient(ax, ay, bx, by, cx, cy), Orient(ax, ay, bx, by, nx, ny)
+                                        if ((d1 > 0) ~= (d2 > 0)) and ((d3 > 0) ~= (d4 > 0)) then ok = false break end
+                                    end
+                                end
+                            end
+                            if ok then
+                                local step = (dr ~= 0 and dc ~= 0) and 1.41421356 or 1
+                                if v == 1 then step = step * SWIM end
+                                local nd, nkey = d + step, nr * 65536 + nc
+                                if not best[nkey] or nd < best[nkey] then
+                                    best[nkey], came[nkey] = nd, key
+                                    -- push
+                                    size = size + 1
+                                    heap[size] = { nkey, nd }
+                                    local i = size
+                                    while i > 1 do
+                                        local p = math.floor(i / 2)
+                                        if heap[p][2] <= heap[i][2] then break end
+                                        heap[p], heap[i] = heap[i], heap[p]
+                                        i = p
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- each way as its corners: the cells where the walk turns
+    local out = {}
+    for _, f in ipairs(found) do
+        local cells, key = {}, f[3]
+        while key do
+            cells[#cells + 1] = key
+            key = came[key]
+        end
+        local points = {}
+        for i = #cells - 1, 2, -1 do   -- from the start's side; the two ends aren't corners
+            local a, b, c = cells[i + 1], cells[i], cells[i - 1]
+            if b - a ~= c - b then
+                local px, py = CentreOf(g, math.floor(b / 65536), b % 65536)
+                points[#points + 1], points[#points + 2] = px, py
+            end
+        end
+        out[#out + 1] = { f[1], f[2] * g.cell, points }
+    end
+    return out
 end
 
 ---------------------------------------------------------
 --  SECTION: From one place to many
 ---------------------------------------------------------
--- A context for walks from one start.
---   ctx.Walk(x, y)  yards and "direct" or "road"; nil when neither a straight walk nor the
---                   roads reach it
---   ctx.Path(x, y)  the same, plus the junctions to pass on the way as { x1, y1, x2, y2, ... }
---                   (empty for a direct walk)
-function Nav.From(cont, sx, sy)
+-- A context for walks from one start. `onto` is the ways onto the roads from the start when
+-- they're known already (Nav.Approach for a pin, Nav.Reach for the player); without it they
+-- are the junctions a straight line reaches.
+--   ctx.Walk(x, y, onto)  yards and "direct" or "road"; nil when neither a straight walk nor
+--                         the roads reach it. `onto` here is the end's ways onto the roads.
+--   ctx.Path(x, y, onto)  the same, plus the points to pass on the way as { x1, y1, ... }
+--                         (empty for a direct walk): the way onto the road, the junctions and
+--                         the bends of the roads between them, and the way off
+function Nav.From(cont, sx, sy, onto)
     local g = Graph(cont)
-    local roadDist, roadPrev   -- found the first time a direct walk fails or a road might be shorter
+    local shapes = NS.Shapes and NS.Shapes[cont] or {}
+    local roadDist, roadPrev, roadOnto   -- found the first time a direct walk fails or a road might be shorter
     local ctx = {}
 
-    local function Best(x, y)
+    local function Best(x, y, off)
         local direct = Nav.Segment(cont, sx, sy, x, y)
         if not g then return direct, direct and "direct" or nil end
         local bird = math.sqrt((x - sx) ^ 2 + (y - sy) ^ 2)
         if direct and direct <= bird * CLEAR then return direct, "direct" end
-        if not roadDist then roadDist, roadPrev = RoadsFrom(g, cont, sx, sy) end
+        if not roadDist then roadDist, roadPrev, roadOnto = RoadsFrom(g, onto or Snap(g, cont, sx, sy)) end
         local best, how, last = direct, direct and "direct" or nil, nil
-        for _, s in ipairs(Snap(g, cont, x, y)) do
+        for _, s in ipairs(off or Snap(g, cont, x, y)) do
             local d = roadDist[s[1]]
-            if d and (not best or d + s[2] < best) then best, how, last = d + s[2], "road", s[1] end
+            if d and (not best or d + s[2] < best) then best, how, last = d + s[2], "road", s end
         end
         return best, how, last
     end
 
-    function ctx.Walk(x, y)
-        local yards, how = Best(x, y)
+    function ctx.Walk(x, y, off)
+        local yards, how = Best(x, y, off)
         return yards, how
     end
 
-    function ctx.Path(x, y)
-        local yards, how, last = Best(x, y)
+    function ctx.Path(x, y, off)
+        local yards, how, last = Best(x, y, off)
         if not yards then return nil end
         local points = {}
         if how == "road" then
-            local chain, node, guard = {}, last, 0
+            local chain, node, guard = {}, last[1], 0
             while node and guard < 5000 do
                 chain[#chain + 1] = node
                 node, guard = roadPrev[node], guard + 1
             end
+            -- onto the road
+            local first = roadOnto[chain[#chain]]
+            for _, v in ipairs(first and first[3] or {}) do points[#points + 1] = v end
+            -- along it: each junction, and the bends of the road to the next
             for i = #chain, 1, -1 do
-                points[#points + 1] = g.xs[chain[i]]
-                points[#points + 1] = g.ys[chain[i]]
+                local a = chain[i]
+                points[#points + 1], points[#points + 2] = g.xs[a], g.ys[a]
+                local b = chain[i - 1]
+                if b then
+                    local bends = shapes[math.min(a, b) * 65536 + math.max(a, b)]
+                    if bends then
+                        if a < b then
+                            for _, v in ipairs(bends) do points[#points + 1] = v end
+                        else
+                            for k = #bends - 1, 1, -2 do
+                                points[#points + 1], points[#points + 2] = bends[k], bends[k + 1]
+                            end
+                        end
+                    end
+                end
+            end
+            -- and off it: the end's way onto the road, backwards
+            local way = last[3]
+            if way then
+                for k = #way - 1, 1, -2 do
+                    points[#points + 1], points[#points + 2] = way[k], way[k + 1]
+                end
             end
         end
         return yards, how, points
@@ -335,23 +548,41 @@ function Nav.From(cont, sx, sy)
     return ctx
 end
 
--- Where to head now on a way (its junctions, then the end) from (px, py): the furthest
--- point a clear straight walk reaches, which cuts the corners the roads don't need. Junctions
--- you're already standing at don't count; past the last of them it's the end itself, clear
--- or not (the end may be a pin the terrain says can't be reached).
+-- Whether a straight line from (x, y) gets onto the roads (else Nav.Reach is worth its time).
+function Nav.OnRoads(cont, x, y)
+    local g = Graph(cont)
+    if not g then return true end
+    for i = 1, #g.xs do
+        local d = (g.xs[i] - x) ^ 2 + (g.ys[i] - y) ^ 2
+        if d <= SNAP_RANGE ^ 2 and Nav.Segment(cont, x, y, g.xs[i], g.ys[i]) then return true end
+    end
+    return false
+end
+
+-- Where to head now on a way (its points, then the end) from (px, py): the furthest point in
+-- a row that a clear straight walk reaches, which cuts the corners the way doesn't need.
+-- Points you're already standing at don't count. Past the last point it's the end itself,
+-- clear or not (the end may be a pin the terrain says can't be reached).
 function Nav.Ahead(cont, px, py, points, tx, ty)
     local function Clear(x, y)
         local walk = Nav.Segment(cont, px, py, x, y)
         return walk and walk <= math.sqrt((x - px) ^ 2 + (y - py) ^ 2) * CLEAR
     end
-    local function Far(i) return (points[i] - px) ^ 2 + (points[i + 1] - py) ^ 2 > AT_JUNCTION ^ 2 end
-    if Clear(tx, ty) then return tx, ty end
-    for i = #points - 1, 1, -2 do
-        if Far(i) and Clear(points[i], points[i + 1]) then return points[i], points[i + 1] end
-    end
+    if (tx - px) ^ 2 + (ty - py) ^ 2 < NEAR_END ^ 2 and Clear(tx, ty) then return tx, ty end
+    local hx, hy
     for i = 1, #points - 1, 2 do
-        if Far(i) then return points[i], points[i + 1] end
+        local x, y = points[i], points[i + 1]
+        if hx or (x - px) ^ 2 + (y - py) ^ 2 > AT_JUNCTION ^ 2 then
+            if Clear(x, y) then
+                hx, hy = x, y
+            elseif hx then
+                return hx, hy
+            else
+                return x, y   -- the next point isn't in clear sight (a bridge, a ramp): head for it anyway
+            end
+        end
     end
+    if hx and not Clear(tx, ty) then return hx, hy end
     return tx, ty
 end
 
