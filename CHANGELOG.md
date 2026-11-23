@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0
+
+The route now goes by the ground and the roads, not as the bird flies.
+
+- **Walks follow the terrain.** Explorer now knows where the ground is too steep, where there's water, where the walls are and where the roads run. A walk is a straight line when the ground allows it, and goes by road when it doesn't.
+- **Stop order by real walks.** The stops in the zone you're in are ordered by walking distance. In Eastern Plaguelands that made the full loop about a fifth shorter than ordering by straight lines.
+- **The arrow follows the road.** When the straight line to the next stop is blocked, the arrow points at the stretch of road ahead and shows the walk as "1.1k yd by road".
+- **The map line follows the road.** The line between stops bends along the roads, and a green line shows the way from where you stand to the next stop.
+- **Zone order** counts real walking distance between neighbouring zones.
+- Roads are known junction to junction, so on a winding road the arrow cuts each bend's corner.
+- A pin on ground the data says can't be reached (up a slope, on a roof, in a river) gets the road to the nearest junction and a straight line from there.
+
+Terrain, walls and roads come from AzerothGPS's data, used with its author's permission and shipped inside Explorer. They cover the Eastern Kingdoms and Kalimdor.
+
 ## 0.6.0
 
 Explorer now plans a route through everything you have left and points the way.

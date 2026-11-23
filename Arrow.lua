@@ -4,7 +4,8 @@
 ---------------------------------------------------------
 -- An arrow on screen that points at the route's next stop (Route.lua), or at the first
 -- thing to do on the way there (a flight master, a boat), with what it is, how far and how
--- long. It turns as you turn: the bearing to the target minus the way you face.
+-- long. It turns as you turn: the bearing to the target minus the way you face. Where the
+-- straight line is blocked, it points along the road instead (Route.lua's guide.way).
 -- Only the arrow itself takes the mouse; the text under it lets clicks through.
 
 local ADDON, NS = ...
@@ -144,6 +145,16 @@ local function Refresh()
     local tm, tx, ty = stop.map, stop.x / 100, stop.y / 100
     if leg then tm, tx, ty = leg.map, leg.x, leg.y end
     local yards, bearing = NS.Between(pm, px, py, tm, tx, ty)
+    -- the straight line is blocked and the roads go round: head for the point on the way
+    -- that's in clear sight, and count the walk, not the bird's distance
+    local way, byRoad = g.way, false
+    if way and way.x then
+        local inst, wx, wy = NS.WorldPos(pm, px, py)
+        if inst == way.inst then
+            bearing = math.atan2(way.y - wy, way.x - wx)
+            yards, byRoad = way.yards, true
+        end
+    end
     local flying = UnitOnTaxi ~= nil and UnitOnTaxi("player")
 
     local zone = stop.zone
@@ -160,10 +171,10 @@ local function Refresh()
 
     local dist = ""
     if yards and not flying then
-        if not leg and yards < HERE then
+        if not leg and not byRoad and yards < HERE then
             dist = "You're at the pin. Walk around until it ticks."
         else
-            dist = Distance(yards)
+            dist = Distance(yards) .. (byRoad and " by road" or "")
             local speed = GetUnitSpeed and GetUnitSpeed("player")
             if type(speed) == "number" and speed > 0 then dist = dist .. "   " .. Clock(yards / speed) end
         end

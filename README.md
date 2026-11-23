@@ -7,8 +7,8 @@ World of Warcraft: Forever addon. Puts a pin on the world map for every area you
 - **The zone you're in:** a spyglass pin on each area the challenge hasn't ticked yet. Hover it for the area name and the zone's progress. Click it to set a waypoint there. On the continent map they show as small gold dots.
 - **Other zones:** open a zone's map and its unexplored areas show as small faint markers that stay out of the way of the map's other icons. Hover one for its name, click it for a waypoint. "Zones I'm not in" in the settings switches them to full pins or off.
 - **Continent maps:** hover a zone and a line under its name says "Explored 7/9". Fully explored zones have no line. Only the zone you're in has markers at this level.
-- **Route:** the areas you have left, in an order worth walking. Your zone's areas come first, as a short path from where you stand; then the other zones, each time the one quickest to reach (flight paths you know, boats, zeppelins, the tram). Pins are numbered in that order and joined by a line. "Route covers" in the settings picks your zone, your continent or everything, and zones more than 5 levels above you are left out unless you say otherwise.
-- **Arrow:** points at the next stop and turns as you turn, with the stop's name, distance and time. For a stop in another zone it points at the first leg of the trip ("Talk to the Flightmaster to travel to ..."). Click it for a waypoint, right-click to skip the stop, drag to move, scroll to resize.
+- **Route:** the areas you have left, in an order worth walking. Your zone's areas come first, as a short path from where you stand, measured by the ground and the roads; then the other zones, each time the one quickest to reach (flight paths you know, boats, zeppelins, the tram). Pins are numbered in that order and joined by a line. "Route covers" in the settings picks your zone, your continent or everything, and zones more than 5 levels above you are left out unless you say otherwise.
+- **Arrow:** points at the next stop and turns as you turn, with the stop's name, distance and time. Where the straight line is blocked it points along the road. For a stop in another zone it points at the first leg of the trip ("Talk to the Flightmaster to travel to ..."). Click it for a waypoint, right-click to skip the stop, drag to move, scroll to resize.
 - **Popup** when an area gets its tick: a banner near the top of the screen with the area, its zone and the zone's new count. `/ep test` (or "Sample" in the settings) shows a sample you can drag to move, scroll on to resize, and right-click to reset.
 - **Chat line** for the same, if you want it in the log too.
 - `/explorer` (or `/ep`) opens the window: progress per zone (click a zone to open its map) and the settings.
@@ -40,7 +40,11 @@ Travel between zones is worked out by [FarstriderLib](https://github.com/Deathwi
 
 Flight paths are used only between flight masters your character knows, and the game only says which those are while a flight master's map is open. Open one on each continent once.
 
-Walking legs are straight lines. The route does not know about cliffs or walls.
+## Walking
+
+Walks go by the ground: `Nav.lua` knows steep ground, water, walls and the road network, and takes a straight line where the ground allows it and the roads where it doesn't. The stop order in your zone, the arrow, the line on the map and the walks between zones all use it. Roads are stored junction to junction, so the arrow cuts the corners of a winding road.
+
+The data in `Nav/` is AzerothGPS's terrain grid, walls and roads, (c) AzerothGPS, all rights reserved, used with its author's permission. `tools/build_nav_data.py` rebuilds it from the latest WoW Forever release of AzerothGPS on CurseForge. It covers the Eastern Kingdoms and Kalimdor; anywhere else a walk is a straight line.
 
 ## Install
 

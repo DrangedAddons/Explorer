@@ -65,13 +65,17 @@ C_Map = {
 UiMapPoint = { CreateFromCoordinates = function(map, x, y) return { map = map, x = x, y = y } end }
 C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
 
--- The world: every zone map is 1500 yards across and 1000 down, laid out on a grid by its ID.
+-- The world: every zone map is 1500 yards across and 1000 down, laid out on a grid by its ID,
+-- on a continent (99) the walking data doesn't know. Eastern Plaguelands is the exception:
+-- its real place in the Eastern Kingdoms (0), so walks there go by the real terrain and roads.
 -- World x runs north and world y west, as in game.
 local function MapOrigin(map) return -math.floor(map / 7) % 7 * 1100, -(map % 7) * 1600 end
 function CreateVector2D(x, y) return { x = x, y = y, GetXY = function(self) return self.x, self.y end } end
+local function EPL(x, y) return 3691.67 + y * (825 - 3691.67), -2256.25 + x * (-6558.33 + 2256.25) end
 C_Map.GetWorldPosFromMapPos = function(map, v)
+    if map == 1423 then return 0, CreateVector2D(EPL(v.x, v.y)) end
     local bx, by = MapOrigin(map)
-    return 0, CreateVector2D(bx - v.y * 1000, by - v.x * 1500)
+    return 99, CreateVector2D(bx - v.y * 1000, by - v.x * 1500)
 end
 local facing, level, now, onTaxi = 0, 60, 100, false
 function GetPlayerFacing() return facing end
@@ -99,7 +103,8 @@ FarstriderLib_API = {
     end,
 }
 
-ns = LoadAddon(ADDON_DIR, "Explorer", { "Theme.lua", "Widgets.lua", "Window.lua", "Data.lua", "Core.lua", "Route.lua", "Toast.lua", "Arrow.lua", "UI.lua" })
+ns = LoadAddon(ADDON_DIR, "Explorer", { "Theme.lua", "Widgets.lua", "Window.lua", "Data.lua", "Core.lua",
+    "Nav/Terrain.lua", "Nav/Roads.lua", "Nav.lua", "Route.lua", "Toast.lua", "Arrow.lua", "UI.lua" })
 FireEvent("ADDON_LOADED", "Explorer")
 FireEvent("PLAYER_LOGIN")
 FlushTimers()
@@ -529,6 +534,117 @@ do
     end
     Check(R.Next() == nil and numbered == 0, "route setting off: no route, no numbers")
     ns.db.route = true
+end
+
+-- Walking: straight where the ground is clear, by road where it isn't.
+do
+    local Nav = ns.Nav
+    local function At(name)
+        for _, a in pairs(ns.Areas) do
+            if a[1] == 1423 and a[4] == name then return EPL(a[2] / 100, a[3] / 100) end
+        end
+    end
+    local function Walk(from, to)
+        local ax, ay = At(from)
+        local bx, by = At(to)
+        local yards, how, points = Nav.From(0, ax, ay).Path(bx, by)
+        return yards, how, points, math.sqrt((ax - bx) ^ 2 + (ay - by) ^ 2)
+    end
+    Check(Nav.Knows(0) and not Nav.Knows(99), "walking data: the Eastern Kingdoms, not the test continent")
+    local yards, how, points, bird = Walk("The Marris Stead", "Crown Guard Tower")
+    Check(how == "direct" and #points == 0 and math.abs(yards - bird) < bird * 0.02, "clear ground: a straight walk")
+    yards, how, points, bird = Walk("Stratholme", "Tyr's Hand")
+    Check(how == "road" and #points >= 12 and yards > bird * 1.1 and yards < bird * 2,
+        ("Stratholme to Tyr's Hand goes by road: %d yd through %d junctions, %d as the bird flies"):format(yards, #points / 2, bird))
+    yards, how = Walk("Thondroril River", "Zul'Mashar")
+    Check(yards and how == "road", "a pin the terrain says can't be reached still gets a way: the road as far as it goes")
+    do
+        local ax, ay = At("Corin's Crossing")
+        local bx, by = At("Light's Hope Chapel")
+        local _, _, pts = Nav.From(0, ax, ay).Path(bx, by)
+        local hx, hy = Nav.Ahead(0, ax, ay, pts, bx, by)
+        local onWay = false
+        for i = 1, #pts - 1, 2 do
+            if pts[i] == hx and pts[i + 1] == hy then onWay = true end
+        end
+        Check(onWay and Nav.Segment(0, ax, ay, hx, hy) ~= nil, "the point to head for is a junction on the way, in clear sight")
+        local lx, ly = pts[#pts - 1], pts[#pts]
+        hx, hy = Nav.Ahead(0, lx, ly, { lx, ly }, bx, by)
+        Check(hx == bx and hy == by, "at the last junction the way points at the stop itself")
+    end
+
+    -- In Eastern Plaguelands the route's stops are ordered by those walks, and drawn along them.
+    local R = ns.Route
+    player.map, player.x, player.y = 1423, 0.52, 0.596
+    R.Replan()
+    for _ = 1, 3000 do R.Step() end
+    R.Tick()
+    for _ = 1, 3000 do R.Step() end
+    local e = R.Order()[1]
+    local ways = 0
+    for _ in pairs(e.ways or {}) do ways = ways + 1 end
+    Check(e.map == 1423 and #e.stops == 22 and ways >= 10, "Eastern Plaguelands: 22 stops in walking order, " .. ways .. " of the hops by road")
+    local len, straight = 0, 0
+    do
+        -- the walk along the order, against the straight-line order's walk
+        local function PathLen(stops)
+            local total, px, py = 0, EPL(0.52, 0.596)
+            for _, o in ipairs(stops) do
+                local a = ns.AreaByOverlay(o)
+                local ax, ay = EPL(a.x / 100, a.y / 100)
+                total = total + (Nav.From(0, px, py).Walk(ax, ay) or 0)
+                px, py = ax, ay
+            end
+            return total
+        end
+        len = PathLen(e.stops)
+        local areas = {}
+        for _, o in ipairs(e.stops) do areas[#areas + 1] = ns.AreaByOverlay(o) end
+        table.sort(areas, function(a, b) return a.overlay < b.overlay end)
+        local rough, cur = {}, { x = 52, y = 59.6 }
+        while #areas > 0 do   -- nearest next by the map alone
+            local pick, near
+            for i, a in ipairs(areas) do
+                local d = ((a.x - cur.x) * 1.5) ^ 2 + (a.y - cur.y) ^ 2
+                if not near or d < near then pick, near = i, d end
+            end
+            cur = table.remove(areas, pick)
+            rough[#rough + 1] = cur.overlay
+        end
+        straight = PathLen(rough)
+    end
+    Check(len <= straight * 1.02, ("walking order is no longer than the straight-line order: %d against %d yd"):format(len, straight))
+
+    local g = R.Guide()
+    Check(g and g.stop.map == 1423 and g.way ~= nil, "the guide has the walk to the next stop")
+    -- pass over stops until the next one is a walk by road
+    for _ = 1, 8 do
+        if g.way and g.way.points then break end
+        R.Skip()
+        g = R.Guide()
+    end
+    ns.RefreshArrow()
+    local arrow = ExplorerArrow
+    Check(g.way.points and arrow:IsShown() and arrow.dist:GetText():find("^%d[%d.k]* yd by road"),
+        "a stop behind blocked ground: the arrow counts the walk by road: " .. arrow.dist:GetText())
+    do
+        local wx, wy = EPL(0.52, 0.596)
+        local tx, ty = EPL(g.stop.x / 100, g.stop.y / 100)
+        local along, straightAt = math.atan2(g.way.y - wy, g.way.x - wx), math.atan2(ty - wy, tx - wx)
+        Check(math.abs(arrow.turn - (along - facing)) < 1e-6 and (g.way.x ~= tx or g.way.y ~= ty),
+            ("and points at the road ahead (%.0f degrees off the straight line)"):format(math.abs(along - straightAt) * 180 / math.pi))
+    end
+    viewed = 1423
+    Tick()
+    local lineCount = 0
+    for _, r in ipairs({ layer:GetRegions() }) do
+        if r:GetObjectType() == "Line" and r:IsShown() then lineCount = lineCount + 1 end
+    end
+    Check(lineCount > 21 + ways, "map: the line between stops bends along the roads (" .. lineCount .. " stretches for 22 stops)")
+    player.map, player.x, player.y = 1416, 0.47, 0.20
+    viewed = 1416
+    R.Replan()
+    for _ = 1, 3000 do R.Step() end
 end
 
 -- The sample popup: takes the mouse, drags, resizes, resets.

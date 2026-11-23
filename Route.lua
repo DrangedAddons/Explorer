@@ -13,8 +13,9 @@
 --   guide   the next stop, and when it's in another zone the first thing to do to get
 --           there ("Talk to the Flightmaster to travel to ..."), from FarstriderLib.
 --
--- Walking legs are straight lines, in FarstriderLib too: nothing here knows a cliff or a
--- wall between two points.
+-- Walks are measured by Nav.lua (terrain, walls and roads) where it has data: the order of
+-- the stops in the zone you're in, the way to the next stop, and walks between zones.
+-- FarstriderLib's own walking legs are straight lines.
 
 local ADDON, NS = ...
 
@@ -25,6 +26,9 @@ local BUDGET_MS = 4         -- planning time per frame
 local WALK = 1.3 / 7        -- seconds a yard on foot, with FarstriderLib's detour factor
 local FAR = 3600            -- a cost for "no idea": another continent with no pathfinder
 local LEG_EVERY = 3         -- seconds between travel lookups for the same stop
+local ON_FOOT = 1000        -- FarstriderLib's kind of step for going on foot
+local UNREACHED = 1.5       -- no way found on foot: the bird's distance and half again
+local WAY_EVERY, WAY_MOVED = 5, 25   -- the walk to the next stop is found again after this many seconds or yards
 
 local Route = {}
 NS.Route = Route
@@ -148,18 +152,60 @@ function Route.TooHigh(zone)
     return zoneLevel ~= nil and type(level) == "number" and zoneLevel > level + LEVEL_MARGIN
 end
 
--- Seconds from one map point to another: FarstriderLib's route, else a straight walk.
-local function TravelTime(m1, x1, y1, m2, x2, y2)
+-- Walks from a zone's middle, kept by zone so one look at the roads serves every zone
+-- weighed from it. { inst, wx, wy, nav } or false without walking data there.
+local walkers = {}
+
+local function Walker(key, map, x, y)
+    local w = key and walkers[key]
+    if w == nil then
+        w = false
+        local inst, wx, wy = NS.WorldPos(map, x, y)
+        if inst and NS.Nav and NS.Nav.Knows(inst) then
+            w = { inst = inst, wx = wx, wy = wy, nav = NS.Nav.From(inst, wx, wy) }
+        end
+        if key then walkers[key] = w end
+    end
+    return w or nil
+end
+
+-- Yards on foot between two map points by terrain and roads, and as the bird flies.
+-- nil without walking data, across continents, or with no way found.
+local function WalkYards(key, m1, x1, y1, m2, x2, y2)
+    local w = Walker(key, m1, x1, y1)
+    if not w then return nil end
+    local inst, tx, ty = NS.WorldPos(m2, x2, y2)
+    if inst ~= w.inst then return nil end
+    local yards = w.nav.Walk(tx, ty)
+    if not yards then return nil end
+    return yards, math.sqrt((tx - w.wx) ^ 2 + (ty - w.wy) ^ 2)
+end
+
+-- Seconds from one map point to another. FarstriderLib's route where it has one; a route of
+-- its that is all on foot is a straight line with 30% added, so that one is scaled to the
+-- walk the terrain and roads allow. `key` names the start when it's a zone's middle.
+local function TravelTime(key, m1, x1, y1, m2, x2, y2)
     local api = FarstriderLib_API
     if type(api) == "table" and api.FindTrail then
         local ok, _, _, edges = pcall(api.FindTrail, m1, x1, y1, 0, m2, x2, y2, 0)
         if ok and type(edges) == "table" and #edges > 0 then
-            local cost = 0
-            for _, e in ipairs(edges) do cost = cost + (tonumber(e.cost) or 0) end
-            if cost > 0 and cost < math.huge then return cost end
+            local cost, onFoot = 0, true
+            for _, e in ipairs(edges) do
+                cost = cost + (tonumber(e.cost) or 0)
+                if e.locaId ~= ON_FOOT then onFoot = false end
+            end
+            if cost > 0 and cost < math.huge then
+                if onFoot then
+                    local yards, bird = WalkYards(key, m1, x1, y1, m2, x2, y2)
+                    if yards and bird > 1 then cost = cost * yards / (bird * 1.3) end
+                end
+                return cost
+            end
         end
     end
-    local yards = NS.Between(m1, x1, y1, m2, x2, y2)
+    local yards = WalkYards(key, m1, x1, y1, m2, x2, y2)
+    if yards then return yards / 7 end
+    yards = NS.Between(m1, x1, y1, m2, x2, y2)
     return yards and yards * WALK or FAR
 end
 
@@ -171,28 +217,21 @@ local function Gap(a, b)   -- map percent, across counting 1.5x (zone maps are 3
     return math.sqrt(dx * dx + dy * dy)
 end
 
--- sx, sy: where the path starts from (map percent), or nil when that isn't known.
-local function OrderStops(areas, sx, sy)
-    local n = #areas
+-- A short path through n stops: nearest next, then untangled. dist(i, j) is the walk between
+-- stops i and j (the same both ways). Stop 0 is where the path starts from when `start` is
+-- set; otherwise `first` is the stop to begin at. Returns the stops' numbers in order.
+local function Order(n, start, dist, first)
     local left, path = {}, {}
-    for i, a in ipairs(areas) do left[i] = a end
-    local start = sx and { x = sx, y = sy }
-    local cur = start
-    if not cur then
-        -- no start: begin at the area furthest from the middle, so the path runs end to end
-        local _, mx, my = Centre(areas)
-        local mid, pick, far = { x = mx * 100, y = my * 100 }, 1, -1
-        for i, a in ipairs(left) do
-            local d = Gap(mid, a)
-            if d > far then pick, far = i, d end
-        end
-        cur = table.remove(left, pick)
+    for i = 1, n do left[i] = i end
+    local cur = 0
+    if not start then
+        cur = table.remove(left, first or 1)
         path[1] = cur
     end
     while #left > 0 do
         local pick, near
-        for i, a in ipairs(left) do
-            local d = Gap(cur, a)
+        for i, stop in ipairs(left) do
+            local d = dist(cur, stop)
             if not near or d < near then pick, near = i, d end
         end
         cur = table.remove(left, pick)
@@ -204,9 +243,9 @@ local function OrderStops(areas, sx, sy)
         improved, rounds = false, rounds + 1
         for i = 1, n - 1 do
             for j = i + 1, n do
-                local before, after = path[i - 1] or start, path[j + 1]
-                local old = (before and Gap(before, path[i]) or 0) + (after and Gap(path[j], after) or 0)
-                local new = (before and Gap(before, path[j]) or 0) + (after and Gap(path[i], after) or 0)
+                local before, after = path[i - 1] or (start and 0 or nil), path[j + 1]
+                local old = (before and dist(before, path[i]) or 0) + (after and dist(path[j], after) or 0)
+                local new = (before and dist(before, path[j]) or 0) + (after and dist(path[i], after) or 0)
                 if new + 1e-9 < old then
                     local a, b = i, j
                     while a < b do
@@ -221,6 +260,30 @@ local function OrderStops(areas, sx, sy)
     return path
 end
 
+-- A zone's areas by straight lines on its map. sx, sy: where the path starts from (map
+-- percent), or nil when that isn't known.
+local function OrderStops(areas, sx, sy)
+    local pts = {}
+    for i, a in ipairs(areas) do pts[i] = a end
+    local first
+    if sx then
+        pts[0] = { x = sx, y = sy }
+    else
+        -- no start: begin at the area furthest from the middle, so the path runs end to end
+        local _, mx, my = Centre(areas)
+        local mid, far = { x = mx * 100, y = my * 100 }, -1
+        for i, a in ipairs(areas) do
+            local d = Gap(mid, a)
+            if d > far then first, far = i, d end
+        end
+    end
+    local out = {}
+    for i, stop in ipairs(Order(#areas, sx ~= nil, function(i, j) return Gap(pts[i], pts[j]) end, first)) do
+        out[i] = areas[stop]
+    end
+    return out
+end
+
 ---------------------------------------------------------
 --  SECTION: The plan
 ---------------------------------------------------------
@@ -228,6 +291,7 @@ end
 -- stops were ordered without knowing where you'd come in } }. Areas are held by overlay ID:
 -- every scan makes new area tables.
 local plan, builder
+local refiner        -- a coroutine putting the zone you're in into walking order
 local stale = true
 local version = 0
 local times = {}     -- ["from>to"] = seconds between two zones' middles
@@ -313,10 +377,10 @@ local function Build(p)
             if not t then
                 coroutine.yield()
                 if from then
-                    t = TravelTime(from.map, from.cx, from.cy, c.map, c.cx, c.cy)
+                    t = TravelTime(from.zone.id, from.map, from.cx, from.cy, c.map, c.cx, c.cy)
                     times[key] = t
                 else
-                    t = TravelTime(curMap, curX, curY, c.map, c.cx, c.cy)
+                    t = TravelTime(nil, curMap, curX, curY, c.map, c.cx, c.cy)
                 end
             end
             if not bestTime or t < bestTime then best, bestTime = c, t end
@@ -334,18 +398,82 @@ local function Build(p)
     p.done = true
 end
 
+-- The zone you're in, by real walks: terrain and roads between every two stops, the order
+-- from those, and the way between each two stops in a row for the map. Runs as a coroutine
+-- (one stop's walks a step) after the straight-line order is already up.
+local function Refine(e)
+    local Nav = NS.Nav
+    local pm, px, py = NS.PlayerPos()
+    if not Nav or pm ~= e.map then return end
+    local inst, wx, wy = NS.WorldPos(pm, px, py)
+    if not (inst and Nav.Knows(inst)) then return end
+    local areas, pts = {}, { [0] = { wx, wy } }
+    for _, overlay in ipairs(e.stops) do
+        local a = NS.AreaByOverlay(overlay)
+        local ai, ax, ay
+        if a then ai, ax, ay = NS.WorldPos(a.map, a.x / 100, a.y / 100) end
+        if ai ~= inst then return end
+        areas[#areas + 1] = a
+        pts[#areas] = { ax, ay }
+    end
+    local n = #areas
+    if n < 2 then return end
+
+    local from, D = {}, {}
+    for i = 0, n do D[i] = {} end
+    for i = 0, n - 1 do
+        coroutine.yield()
+        from[i] = Nav.From(inst, pts[i][1], pts[i][2])
+        for j = i + 1, n do
+            local d = from[i].Walk(pts[j][1], pts[j][2])
+            if not d then
+                d = math.sqrt((pts[i][1] - pts[j][1]) ^ 2 + (pts[i][2] - pts[j][2]) ^ 2) * UNREACHED
+            end
+            D[i][j], D[j][i] = d, d
+        end
+    end
+    local order = Order(n, true, function(i, j) return D[i][j] end)
+
+    local ways = {}
+    for k = 2, n do
+        coroutine.yield()
+        local a, b = order[k - 1], order[k]
+        local ctx = from[a] or Nav.From(inst, pts[a][1], pts[a][2])
+        local yards, how, points = ctx.Path(pts[b][1], pts[b][2])
+        if yards and how == "road" then
+            ways[areas[a].overlay .. ">" .. areas[b].overlay] = { inst = inst, points = points }
+        end
+    end
+
+    -- stops ticked while this ran are gone from e.stops: the new order is for the rest
+    local still, stops = {}, {}
+    for _, overlay in ipairs(e.stops) do still[overlay] = true end
+    for _, stop in ipairs(order) do
+        local overlay = areas[stop].overlay
+        if still[overlay] then stops[#stops + 1] = overlay end
+    end
+    e.stops, e.ways = stops, ways
+    Changed()
+end
+
 local function Step()
-    if not builder then return end
+    if not builder and not refiner then return end
     local started = debugprofilestop and debugprofilestop() or 0
     repeat
-        local ok, err = coroutine.resume(builder)
-        if not ok or coroutine.status(builder) == "dead" then
-            builder = nil
-            if plan then
-                plan.done = true
-                if not ok then plan.error = tostring(err) end
+        if refiner then
+            local ok = coroutine.resume(refiner)
+            if not ok or coroutine.status(refiner) == "dead" then refiner = nil end
+        elseif builder then
+            local ok, err = coroutine.resume(builder)
+            if not ok or coroutine.status(builder) == "dead" then
+                builder = nil
+                if plan then
+                    plan.done = true
+                    if not ok then plan.error = tostring(err) end
+                end
+                Changed()
             end
-            Changed()
+        else
             return
         end
     until not debugprofilestop or debugprofilestop() - started > BUDGET_MS
@@ -354,7 +482,7 @@ end
 local function Start()
     local db = NS.db
     plan = { order = {}, done = false, scope = db.routeScope, allLevels = db.routeAllLevels, known = KnownZones() }
-    stale = false
+    stale, refiner = false, nil
     local p = plan
     builder = coroutine.create(function() Build(p) end)
     -- up to the first travel lookup: the zone you're in is ready at once
@@ -421,7 +549,35 @@ local function Leg(stop)
     return { map = loc.mapId, x = pos.x, y = pos.y, text = type(s.loca) == "string" and s.loca or "Travel on" }
 end
 
-local function UpdateGuide(pm, onTaxi)
+-- The walk from the player to the stop (or to the first leg of the trip): g.way, with the
+-- point to head for now when the straight line is blocked and the roads go round.
+local function UpdateWay(g, pm, px, py)
+    local Nav = NS.Nav
+    local tm, tx, ty = g.stop.map, g.stop.x / 100, g.stop.y / 100
+    if g.leg then tm, tx, ty = g.leg.map, g.leg.x, g.leg.y end
+    local inst, wx, wy = NS.WorldPos(pm, px, py)
+    local ti, twx, twy = NS.WorldPos(tm, tx, ty)
+    if not (Nav and inst and ti == inst and Nav.Knows(inst)) then
+        g.way = nil
+        return
+    end
+    local now, w = GetTime(), g.way
+    if w and w.tx == twx and w.ty == twy and now - w.at < WAY_EVERY
+        and (wx - w.px) ^ 2 + (wy - w.py) ^ 2 < WAY_MOVED ^ 2
+        and not (w.x and (wx - w.x) ^ 2 + (wy - w.y) ^ 2 < 20 ^ 2) then
+        return
+    end
+    local yards, how, points = Nav.From(inst, wx, wy).Path(twx, twy)
+    w = { at = now, px = wx, py = wy, tx = twx, ty = twy, inst = inst }
+    if yards and how == "road" then
+        w.yards, w.points = yards, points
+        w.x, w.y = Nav.Ahead(inst, wx, wy, points, twx, twy)
+    end
+    g.way = w
+    if NS.PinsStale then NS.PinsStale() end
+end
+
+local function UpdateGuide(pm, px, py, onTaxi)
     local stop, e = Route.Next()
     if not stop then guide = nil return end
     local g = guide
@@ -431,12 +587,16 @@ local function UpdateGuide(pm, onTaxi)
     end
     g.stop, g.entry = stop, e
     if not pm then return end
-    if pm == stop.map then g.leg, g.legFrom = nil, nil return end
-    if onTaxi or InCombatLockdown() then return end   -- the leg stands while you fly or fight
-    local now = GetTime()
-    if g.legFrom == pm and now - legAt < LEG_EVERY then return end
-    legAt, g.legFrom = now, pm
-    g.leg = Leg(stop)
+    if pm == stop.map then g.leg, g.legFrom = nil, nil end
+    if onTaxi or InCombatLockdown() then return end   -- what's there stands while you fly or fight
+    if pm ~= stop.map then
+        local now = GetTime()
+        if g.legFrom ~= pm or now - legAt >= LEG_EVERY then
+            legAt, g.legFrom = now, pm
+            g.leg = Leg(stop)
+        end
+    end
+    UpdateWay(g, pm, px, py)
 end
 
 ---------------------------------------------------------
@@ -469,20 +629,30 @@ local function Tick()
                     break
                 end
             end
-        elseif first and (first.rough or lastMap ~= pm) then
-            Resort(first, px, py)
-            changed = true
+        elseif first then
+            if first.rough or lastMap ~= pm then
+                Resort(first, px, py)
+                first.walked, changed = false, true
+            end
+            if not first.walked and not refiner then
+                first.walked = true
+                local e = first
+                refiner = coroutine.create(function() Refine(e) end)
+            end
         end
         lastMap = pm
     end
     if changed then Changed() end
-    UpdateGuide(pm, onTaxi)
+    UpdateGuide(pm, px, py, onTaxi)
 end
 
 -- Core calls this after a scan found new ticks.
 function Route.OnProgress()
     if plan and Prune() then Changed() end
-    if plan then UpdateGuide(NS.PlayerPos(), false) end
+    if plan then
+        local pm, px, py = NS.PlayerPos()
+        UpdateGuide(pm, px, py, false)
+    end
 end
 
 function Route.Next()
@@ -514,19 +684,30 @@ function Route.Index(overlay)
     if t then return t[1], t[2] end
 end
 
+-- The road between two stops in a row, where the straight line between them is blocked:
+-- { inst, points = { x1, y1, ... } } in world yards, or nil for a straight walk.
+function Route.Way(fromOverlay, toOverlay)
+    if not plan then return nil end
+    local key = fromOverlay .. ">" .. toOverlay
+    for _, e in ipairs(plan.order) do
+        if e.ways and e.ways[key] then return e.ways[key] end
+    end
+end
+
 function Route.Skip()
     local stop = Route.Next()
     if not stop then return nil end
     skipped[stop.overlay] = true
     Prune()
     Changed()
-    UpdateGuide(NS.PlayerPos(), false)
+    local pm, px, py = NS.PlayerPos()
+    UpdateGuide(pm, px, py, false)
     return stop
 end
 
 -- Plan again from where you stand; skipped stops come back.
 function Route.Replan()
-    skipped, times, stale, guide = {}, {}, true, nil
+    skipped, times, walkers, stale, guide = {}, {}, {}, true, nil
     Tick()
 end
 
@@ -536,20 +717,20 @@ frame:RegisterEvent("PLAYER_LEVEL_UP")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LEVEL_UP" then
-        times, stale = {}, true    -- a faster mount changes the travel times, and more zones are in reach
+        times, walkers, stale = {}, {}, true    -- a faster mount changes the travel times, and more zones are in reach
     else
         lastMap = nil
         -- FarstriderLib rebuilds its graph when a flight master's map teaches it new flight paths
         local api = FarstriderLib_API
         if not Route.hooked and type(api) == "table" and api.RegisterRebuildCallback then
-            Route.hooked = pcall(api.RegisterRebuildCallback, function() times = {} end)
+            Route.hooked = pcall(api.RegisterRebuildCallback, function() times = {} end)   -- walks don't change with it
         end
     end
 end)
 frame:SetScript("OnUpdate", function(_, elapsed)
-    if builder and not InCombatLockdown() then
+    if (builder or refiner) and not InCombatLockdown() then
         local ok = pcall(Step)
-        if not ok then builder = nil end
+        if not ok then builder, refiner = nil, nil end
     end
     since = since + elapsed
     if since < 1 then return end

@@ -540,23 +540,71 @@ local function DrawRoute()
         end
     end
     if not layer.CreateLine then return end
-    for _, stops in pairs(zones) do
-        for si, p in pairs(stops) do
-            local q = stops[si + 1]
-            if q then
-                linesUsed = linesUsed + 1
-                local l = lines[linesUsed]
-                if not l then
-                    l = layer:CreateLine(nil, "ARTWORK")
-                    l:SetColorTexture(1, 0.82, 0, 0.5)
-                    lines[linesUsed] = l
-                end
-                l:SetThickness(2 / scale)
-                l:SetStartPoint("CENTER", p)
-                l:SetEndPoint("CENTER", q)
-                l:Show()
+    local canvas = Canvas()
+    local w, h = canvas:GetWidth(), canvas:GetHeight()
+
+    -- A world point on the canvas (0-1 across the map underneath, and past it), or nil.
+    local api = shownStitched and Stitched()
+    local function OnCanvas(inst, wx, wy)
+        if api and api.CanvasFromWorldPos then
+            local ok, x, y = pcall(api.CanvasFromWorldPos, inst, wx, wy)
+            if ok and type(x) == "number" and type(y) == "number" then return x, y end
+        end
+        if shownMap and NS.MapPos then return NS.MapPos(shownMap, inst, wx, wy) end
+    end
+    -- One stretch of line. An end is a pin, or a canvas point { x, y }.
+    local function Stretch(a, b, r, g, bl, alpha)
+        linesUsed = linesUsed + 1
+        local l = lines[linesUsed]
+        if not l then
+            l = layer:CreateLine(nil, "ARTWORK")
+            lines[linesUsed] = l
+        end
+        l:SetColorTexture(r, g, bl, alpha)
+        l:SetThickness(2 / scale)
+        if a.GetObjectType then l:SetStartPoint("CENTER", a) else l:SetStartPoint("TOPLEFT", layer, a[1] * w, -a[2] * h) end
+        if b.GetObjectType then l:SetEndPoint("CENTER", b) else l:SetEndPoint("TOPLEFT", layer, b[1] * w, -b[2] * h) end
+        l:Show()
+    end
+    -- From a to b: along the way's road junctions when it has them and they fit on the canvas,
+    -- else straight.
+    local function Join(a, way, b, r, g, bl, alpha)
+        local via = {}
+        if way and way.points then
+            for i = 1, #way.points - 1, 2 do
+                local x, y = OnCanvas(way.inst, way.points[i], way.points[i + 1])
+                if not x then via = {} break end
+                via[#via + 1] = { x, y }
             end
         end
+        local from = a
+        for _, point in ipairs(via) do
+            Stretch(from, point, r, g, bl, alpha)
+            from = point
+        end
+        Stretch(from, b, r, g, bl, alpha)
+    end
+
+    local nextPin
+    for _, stops in pairs(zones) do
+        for si, p in pairs(stops) do
+            if p.isNext then nextPin = p end
+            local q = stops[si + 1]
+            if q then
+                Join(p, R.Way and R.Way(p.area.overlay, q.area.overlay), q, 1, 0.82, 0, 0.5)
+            end
+        end
+    end
+    -- from where you stand to the next stop, when that goes by road
+    local guide = nextPin and R.Guide and R.Guide()
+    local way = guide and not guide.leg and guide.way
+    if way and way.points and NS.PlayerPos then
+        local pm, px, py = NS.PlayerPos()
+        local inst, wx, wy
+        if pm then inst, wx, wy = NS.WorldPos(pm, px, py) end
+        local x, y
+        if inst == way.inst then x, y = OnCanvas(inst, wx, wy) end
+        if x then Join({ x, y }, way, nextPin, 0.3, 1, 0.3, 0.7) end
     end
 end
 
