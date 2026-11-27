@@ -370,6 +370,60 @@ do
     n, small, list, faint = Pins()
     Check(n == 13 and small == 13 and faint == 0, "OpenMap, continent in view: only your zone's dots, no faint markers")
 
+    -- In a fight OpenMap can't move the game's canvas: it makes it see-through and shows its map
+    -- on a view of its own over it. The pins and lines go onto a canvas of ours over that,
+    -- kept where OpenMap's view is, and back when the fight ends.
+    do
+        local function Lines()
+            local shown = 0
+            for _, r in ipairs({ layer:GetRegions() }) do
+                if r:GetObjectType() == "Line" and r:IsShown() then shown = shown + 1 end
+            end
+            return shown
+        end
+        viewed = 1416
+        canvas:SetScale(1)
+        local u, v = OpenMapAPI.WorldFromMap(1416, 0.5, 0.5)
+        local view = { u = u, v = v, zoom = 4 }   -- OpenMap's zoom 4 is this map at canvas scale 1
+        OpenMapAPI.GetView = function() return view.u, view.v, view.zoom end
+        ns.Route.Tick()   -- a route, so there are lines between the zone's pins
+        for _ = 1, 2000 do ns.Route.Step() end
+        ns.RefreshPins()
+        Tick()
+        local pinsBefore, linesBefore = Pins(), Lines()
+        local _, _, _, px, py = select(3, Pins())[1]:GetPoint(1)
+
+        local fighting = true
+        local outOfCombat = InCombatLockdown
+        InCombatLockdown = function() return fighting end
+        canvas:SetAlpha(0)
+        Tick()
+        local ours = layer:GetParent()
+        Check(ours ~= canvas and ours:GetParent() ~= canvas and ours:GetScale() == 1 and ours:GetWidth() == 1002,
+            "in a fight on OpenMap's map: the pin layer is on a canvas of ours, the game's size and scale")
+        local _, _, _, qx, qy = select(3, Pins())[1]:GetPoint(1)
+        Check(Pins() == pinsBefore and pinsBefore > 0 and Lines() == linesBefore and linesBefore > 0 and qx == px and qy == py,
+            ("and its %d pins and %d lines are all still up, where they were"):format(Pins(), Lines()))
+        Check(ours:GetParent():GetFrameLevel() == 9400 and layer:GetFrameLevel() == 9402 and select(3, Pins())[1]:GetFrameLevel() >= 9402,
+            "over OpenMap's view (9200): the layer at " .. layer:GetFrameLevel())
+        -- zoomed in and dragged in the fight: our canvas follows the view
+        view.zoom, view.u = 8, u + 0.25 / 8
+        Tick()
+        local _, _, _, ox = ours:GetPoint(1)
+        Check(ours:GetScale() == 2 and math.abs(ox - (0 - 0.75 * 1002)) < 0.01 and select(3, Pins())[1]:GetWidth() == 12,
+            "zooming and dragging the map in the fight moves the pins with it (scale " .. ours:GetScale() .. ")")
+        -- the fight ends: OpenMap puts its view back on the game's canvas
+        fighting = false
+        canvas:SetAlpha(1)
+        canvas:SetScale(2)
+        Tick()
+        Check(layer:GetParent() == canvas and layer:GetFrameLevel() == 3002 and Pins() > 0 and not ours:GetParent():IsShown(),
+            "the fight over: the layer is back on the game's canvas, at its level")
+        InCombatLockdown = outOfCombat
+        canvas:SetScale(1)
+        OpenMapAPI.GetView = nil
+    end
+
     stitched = false
     viewed = 1416
     Tick()

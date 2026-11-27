@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.1
+
+- The pins and the route's lines stay on the map in a fight. With OpenMap's stitched map they went as combat started and came back as it ended. Since v0.8.12 OpenMap shows its map in a fight on frames of its own, laid over the game's map canvas, which it makes see-through (an addon may not move that canvas in combat). Explorer's pins and lines sit on that canvas. While OpenMap's view is up they now go onto a canvas of Explorer's own over it, kept where the view is as you zoom and drag, and go back when the fight ends.
+- Nothing changes on the game's own map or without OpenMap: Explorer never hid anything in combat there.
+
+Not checked in game.
+
 ## 0.10.0
 
 The other faction's boats, as a last resort.

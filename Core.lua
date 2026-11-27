@@ -361,9 +361,23 @@ local function PlayerMap()
     return ok and type(map) == "number" and map or nil
 end
 
-local function Canvas()
+-- The game's map canvas: where the pin layer is, but in a fight on OpenMap's map.
+local function MapCanvas()
     local sc = WorldMapFrame and WorldMapFrame.ScrollContainer
     return sc and (sc.Child or sc)
+end
+
+-- In a fight an addon may not move the game's map canvas. So OpenMap makes that canvas
+-- see-through and shows its stitched map on a view of its own laid over it, till the fight
+-- ends. What sits on the game's canvas is unseen meanwhile: the pins and the route's lines
+-- went in every fight. While that view is up the pin layer goes onto a canvas of ours over
+-- it, kept where OpenMap's is ("The pin layer in a fight", below):
+-- fight = { on, view, canvas, x, y (the point of the map underneath at the view's middle) }.
+local fight = { on = false }
+
+-- The canvas the pins are laid out on.
+local function Canvas()
+    return fight.on and fight.canvas or MapCanvas()
 end
 
 -- Where a zone map sits on a continent map: minX, maxX, minY, maxY (0-1), or false.
@@ -478,9 +492,10 @@ local function Place(a, x, y, style, w, h, scale)
         pins[used] = p
     end
     p.area, p.style = a, style
-    -- faint markers sit a level under the pins (a frame level can't change in combat)
+    -- faint markers sit a level under the pins. (On the game's canvas a frame level is left
+    -- alone in combat; on our own canvas, in a fight, it's ours to set.)
     local level = layer:GetFrameLevel() + (style == "faint" and 0 or 1)
-    if p.level ~= level and not InCombatLockdown() and pcall(p.SetFrameLevel, p, level) then p.level = level end
+    if p.level ~= level and (fight.on or not InCombatLockdown()) and pcall(p.SetFrameLevel, p, level) then p.level = level end
     SizePin(p, scale)
     p:ClearAllPoints()
     p:SetPoint("CENTER", layer, "TOPLEFT", x * w, -y * h)
@@ -495,10 +510,111 @@ local function Stitched()
     return ok and on and api or nil
 end
 
+---------------------------------------------------------
+--  SECTION: The pin layer in a fight
+---------------------------------------------------------
+-- OpenMap's view in a fight is its own frames; what it offers other addons is where the view
+-- is: OpenMapAPI.GetView gives the middle of the view on its stitched world and its zoom.
+-- The map underneath stays put for the fight (nothing of the game's map may be set), so the
+-- middle is a point on that map, and the zoom is a canvas scale by a factor that holds for
+-- that map while the window keeps its size. The factor is read off the game's canvas while
+-- the two agree: all the time out of combat, and as the view comes up.
+local FIGHT_LEVEL = 9400        -- over OpenMap's view (9200) and its art, under its arrow (9500)
+local FIGHT_STRATA = "HIGH"     -- the strata OpenMap gives its own icons on that view
+local FRESH = 0.5               -- seconds a factor read out of combat is trusted for as the view comes up
+local factor = {}               -- [map underneath] = { the game's canvas scale / OpenMap's zoom, when }
+
+local function Calibrate(api)
+    if not (api and api.GetView) then return end
+    local c, map = MapCanvas(), WorldMapFrame:GetMapID()
+    local ok, _, _, zoom = pcall(api.GetView)
+    local scale = c and c:GetScale()
+    if ok and map and type(zoom) == "number" and zoom > 0 and type(scale) == "number" and scale > 0 then
+        factor[map] = { scale / zoom, GetTime and GetTime() or 0 }
+    end
+end
+
+-- OpenMap's view in a fight, when it's up: the scale its canvas has, and the point of the
+-- map underneath at the middle of the view. nil otherwise.
+local function OwnView(api)
+    if not (api and api.GetView and InCombatLockdown()) then return nil end
+    local c, map = MapCanvas(), WorldMapFrame:GetMapID()
+    if not (c and map) or (c:GetAlpha() or 1) > 0.01 then return nil end
+    local ok, u, v, zoom = pcall(api.GetView)
+    if not ok or type(u) ~= "number" or type(v) ~= "number" or type(zoom) ~= "number" or zoom <= 0 then return nil end
+    local x, y = api.MapFromWorld(map, u, v)
+    if type(x) ~= "number" or type(y) ~= "number" then return nil end
+    local f = factor[map]
+    if not fight.on and not (f and (GetTime and GetTime() or 0) - f[2] < FRESH) then
+        Calibrate(api)   -- coming up: the game's canvas still has the scale the view took over
+        f = factor[map]
+    end
+    if not f then return nil end
+    return f[1] * zoom, x, y
+end
+
+-- Puts the layer where the map is drawn now: on our canvas over OpenMap's view in a fight,
+-- placed as that view is, and back on the game's canvas when the view has gone. True when
+-- the layer changed hands.
+local function Rehost(api)
+    local scale, x, y = OwnView(api)
+    local home = MapCanvas()
+    if scale then
+        if not fight.view then
+            local sc = WorldMapFrame.ScrollContainer
+            fight.view = CreateFrame("Frame", nil, sc)
+            fight.view:SetAllPoints(sc)
+            fight.view:SetFrameStrata(FIGHT_STRATA)
+            fight.view:SetFrameLevel(FIGHT_LEVEL)
+            if fight.view.SetClipsChildren then fight.view:SetClipsChildren(true) end
+            fight.canvas = CreateFrame("Frame", nil, fight.view)
+        end
+        local view, canvas = fight.view, fight.canvas
+        local w, h = home:GetWidth(), home:GetHeight()
+        if not (w and h and w > 0 and h > 0) then return false end
+        if canvas:GetWidth() ~= w or canvas:GetHeight() ~= h then canvas:SetSize(w, h) end
+        if fight.scale ~= scale or fight.x ~= x or fight.y ~= y or not fight.on then
+            -- as a scroll frame has its child: the map's point (x, y) at the view's middle
+            canvas:SetScale(scale)
+            canvas:ClearAllPoints()
+            canvas:SetPoint("TOPLEFT", view, "TOPLEFT", view:GetWidth() / 2 / scale - x * w, -(view:GetHeight() / 2 / scale - y * h))
+            fight.scale, fight.x, fight.y = scale, x, y
+        end
+        if fight.on then return false end
+        fight.on = true
+        view:Show()
+        layer:SetParent(canvas)
+        layer:ClearAllPoints()
+        layer:SetAllPoints(canvas)
+        pcall(layer.SetFrameLevel, layer, FIGHT_LEVEL + 2)
+        for _, pin in ipairs(pins) do pin.level = nil end   -- a new parent resets its children's levels
+        return true
+    elseif fight.on or (layer:GetParent() ~= home and fight.canvas and layer:GetParent() == fight.canvas) then
+        fight.on, fight.scale = false, nil
+        layer:SetParent(home)
+        layer:ClearAllPoints()
+        layer:SetAllPoints(home)
+        fight.view:Hide()
+        wantLevel = nil
+        for _, pin in ipairs(pins) do pin.level = nil end
+        return true
+    end
+    return false
+end
+
+-- The middle of the view on the map underneath (0-1), as the game's scroll gives it.
+local function Scroll()
+    if fight.on then return fight.x, fight.y end
+    local sc = WorldMapFrame.ScrollContainer
+    return sc.GetCurrentScrollX and sc:GetCurrentScrollX(), sc.GetCurrentScrollY and sc:GetCurrentScrollY()
+end
+
 -- The layer's frame level: with Blizzard's area icons, or just above OpenMap's art when that
--- reaches higher. A frame level on the map can't change in combat; the open map tries again.
+-- reaches higher. A frame level on the game's canvas is left alone in combat; the open map
+-- tries again. (On our own canvas in a fight the level is set as the layer goes onto it.)
 local function FitLevel(api)
-    local want = Canvas():GetFrameLevel() + 500
+    if fight.on then return end
+    local want = MapCanvas():GetFrameLevel() + 500
     if WorldMapFrame.GetPinFrameLevelsManager then
         local ok, lvl = pcall(function()
             return WorldMapFrame:GetPinFrameLevelsManager():GetValidFrameLevel("PIN_FRAME_LEVEL_AREA_POI")
@@ -522,8 +638,7 @@ local function PlaceStitched(api, mapID, w, h, scale, playerMap)
     local sc = WorldMapFrame.ScrollContainer
     local viewW, viewH = sc:GetWidth(), sc:GetHeight()
     if not viewW or viewW <= 0 or not viewH or viewH <= 0 then return end
-    local cx = sc.GetCurrentScrollX and sc:GetCurrentScrollX()
-    local cy = sc.GetCurrentScrollY and sc:GetCurrentScrollY()
+    local cx, cy = Scroll()
     local reachX, reachY
     if type(cx) == "number" and type(cy) == "number" then
         -- half the view, in canvas widths; pins are kept out to twice that from the centre
@@ -808,17 +923,27 @@ end
 ---------------------------------------------------------
 local function BuildLayer()
     if layer then return true end
-    local canvas = Canvas()
+    local canvas = MapCanvas()
     if not canvas then return false end
     layer = CreateFrame("Frame", nil, canvas)
     layer:SetAllPoints()
     FitLevel(nil)
     layer:SetScript("OnShow", function()
         if not hover then pcall(BuildHover) end   -- the label exists once the map has opened
+        local api = Stitched()
+        if api and not fight.on then Calibrate(api) end   -- opened in a fight: before anything zooms
+        pcall(Rehost, api)
         NS.RefreshPins()
     end)
     local since = 0
     layer:SetScript("OnUpdate", function(self, elapsed)
+        -- every frame: OpenMap's view in a fight comes up, moves and goes, and the layer with it
+        local ok, changed = pcall(Rehost, Stitched())
+        if ok and changed then
+            since = 0
+            NS.RefreshPins()
+            return
+        end
         local c = Canvas()
         -- every frame while the map zooms, so pins hold their size on screen
         if CanvasScale(c) ~= shownScale then
@@ -832,10 +957,11 @@ local function BuildLayer()
         local stale = dirty or pinsStale or WorldMapFrame:GetMapID() ~= shownMap or c:GetWidth() ~= shownWidth
             or (Stitched() ~= nil) ~= shownStitched or PlayerMap() ~= shownPlayerMap
             or (wantLevel and self:GetFrameLevel() ~= wantLevel and not InCombatLockdown())
+        local api = Stitched()
+        if api and not fight.on and not InCombatLockdown() then Calibrate(api) end
         if not stale and shownScrollX then
             -- OpenMap's map panned far enough for zones outside the margin to come into view
-            local sc = WorldMapFrame.ScrollContainer
-            local x, y = sc:GetCurrentScrollX(), sc:GetCurrentScrollY()
+            local x, y = Scroll()
             stale = type(x) ~= "number" or type(y) ~= "number"
                 or math.abs(x - shownScrollX) > scrollSlackX or math.abs(y - shownScrollY) > scrollSlackY
         end
